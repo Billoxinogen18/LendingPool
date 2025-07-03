@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "package.json", "use": "@vercel/next" }
+  ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/$1" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, must-revalidate" },
+        { "key": "Pragma", "value": "no-cache" }
+      ]
+    }
+  ],
+  "env": {
+    "NEXT_PUBLIC_LENDING_POOL_ADDRESS": "0xF196Af3d8A104Ac658293e20e4De2A43131c78ca"
+  }
+} 
