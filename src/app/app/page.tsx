@@ -37,7 +37,11 @@ export default function AppPage() {
 
     // Function to check if the contract is deployed
     const checkContractDeployment = useCallback(async () => {
-        if (!provider) return false;
+        console.log('[AppPage] checkContractDeployment triggered.');
+        if (!provider) {
+             console.log('[AppPage] checkContractDeployment aborted: no provider.');
+             return false;
+        }
         
         try {
             const exists = await verifyContractExists(provider);
@@ -63,11 +67,15 @@ export default function AppPage() {
 
     // Function to fetch all required data from the blockchain
     const fetchData = useCallback(async () => {
+        console.log('[AppPage] fetchData triggered.');
         if (!provider || !address) {
+            console.log('[AppPage] fetchData aborted: provider or address missing.');
             setIsLoading(false);
             return;
         }
         
+        console.log(`[AppPage] State before fetching: isConnected=${isConnected}, chainId=${chainId}`);
+
         // Check if contract is deployed first
         const contractValid = await checkContractDeployment();
         if (!contractValid) {

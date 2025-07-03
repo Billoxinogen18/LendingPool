@@ -25,12 +25,21 @@ export interface IUserData {
 
 // Helper to check if contract exists at address
 export const verifyContractExists = async (provider: ethers.providers.Provider): Promise<boolean> => {
+    console.log(`[verifyContractExists] Verifying contract at address: ${LENDING_POOL_ADDRESS}`);
+    if (LENDING_POOL_ADDRESS === '0x0000000000000000000000000000000000000000') {
+        console.error("[verifyContractExists] Lending pool address is not configured (is zero address).");
+        return false;
+    }
     try {
+        const network = await provider.getNetwork();
+        console.log(`[verifyContractExists] Verifying on network: ${network.name} (chainId: ${network.chainId})`);
         const code = await provider.getCode(LENDING_POOL_ADDRESS);
-        // If there's no code at the address, it will return "0x"
-        return code !== '0x';
+        console.log(`[verifyContractExists] Result of getCode: (length: ${code.length})`, code.substring(0, 10) + '...');
+        const exists = code !== '0x';
+        console.log(`[verifyContractExists] Contract ${exists ? 'exists' : 'does NOT exist'}.`);
+        return exists;
     } catch (error) {
-        console.error("Error verifying contract:", error);
+        console.error("[verifyContractExists] Error during getCode call:", error);
         return false;
     }
 };
@@ -46,6 +55,7 @@ const getErc20Contract = (tokenAddress: string, providerOrSigner: ethers.provide
 
 // Fetches all relevant user and market data in a single batch
 export const getUserData = async (provider: ethers.providers.Provider, userAddress: string): Promise<IUserData> => {
+    console.log(`[getUserData] Starting data fetch for user ${userAddress} on contract ${LENDING_POOL_ADDRESS}`);
     if (LENDING_POOL_ADDRESS === '0x0000000000000000000000000000000000000000') {
         toast.error('Lending pool address not configured');
         throw new Error('Lending pool address not set');

@@ -155,50 +155,56 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     const connectWallet = async () => {
         if (typeof (window as any).ethereum !== 'undefined') {
             try {
+                setIsInitializing(true);
                 const ethereum = (window as any).ethereum;
                 console.log('Connecting wallet...');
-                
-                // Request account access directly from ethereum provider
+
                 const accounts: string[] = await ethereum.request({ method: 'eth_requestAccounts' });
                 console.log('eth_requestAccounts returned:', accounts);
-                
+
                 if (accounts.length === 0) {
                     toast.error('No accounts found. Please unlock your wallet.');
+                    setIsInitializing(false);
+                    return;
+                }
+
+                const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
+                const network = await web3Provider.getNetwork();
+
+                if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
+                    console.log(`Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
+                    const switched = await switchToBSCNetwork();
+                    if (!switched) {
+                        toast.error('Please switch to BSC Testnet to proceed.');
+                        setIsInitializing(false);
+                        return;
+                    }
+                    // The chainChanged event handler will now correctly take over
+                    localStorage.setItem('walletConnected', 'true');
+                    // We don't need to set the rest of the state, the event handler will.
+                    // Set isInitializing to false after a brief delay to allow event to propagate
+                    setTimeout(() => setIsInitializing(false), 1000);
                     return;
                 }
                 
-                // Now create provider with authorized accounts
-                const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
-                const currentNetwork = await web3Provider.getNetwork();
-                if (currentNetwork.chainId !== BSC_TESTNET_CHAIN_ID) {
-                    const networkSwitched = await switchToBSCNetwork();
-                    if (!networkSwitched) {
-                        return;
-                    }
-                }
-                
+                console.log('Correct network. Setting up provider...');
                 const web3Signer = web3Provider.getSigner();
-                const userAddress = await web3Signer.getAddress();
-                const network = await web3Provider.getNetwork();
-
                 setProvider(web3Provider);
                 setSigner(web3Signer);
-                setAddress(userAddress);
+                setAddress(accounts[0]);
                 setChainId(network.chainId);
                 setIsConnected(true);
                 localStorage.setItem('walletConnected', 'true');
                 console.log('Wallet connected successfully, saved to localStorage');
                 
-                // Only show toast if this is not the initial connection
                 if (isInitialized) {
                     toast.success('Wallet connected!');
                 }
 
-                setIsInitializing(false);
-
             } catch (error) {
                 console.error("Failed to connect wallet:", error);
                 toast.error("Failed to connect wallet. Please try again.");
+            } finally {
                 setIsInitializing(false);
             }
         } else {
@@ -211,71 +217,66 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         const checkConnection = async () => {
             console.log('Checking wallet connection...');
             const ethereum = (window as any).ethereum;
-            const walletConnected = localStorage.getItem('walletConnected');
-            console.log('localStorage walletConnected:', walletConnected);
             if (ethereum && localStorage.getItem('walletConnected') === 'true') {
                 try {
-                    console.log('Attempting auto-reconnect...');
                     const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
-                    // Use eth_accounts to get currently connected accounts without prompting
-                    const accounts: string[] = await (ethereum.request({ method: 'eth_accounts' }) as Promise<string[]>);
-                    console.log('eth_accounts returned:', accounts);
-                    
+                    const accounts: string[] = await ethereum.request({ method: 'eth_accounts' });
+
                     if (accounts && accounts.length > 0) {
-                        console.log('Account found, reconnecting:', accounts[0]);
-                        const web3Signer = web3Provider.getSigner();
-                        const userAddress = accounts[0];
+                        console.log('Account found:', accounts[0]);
                         const network = await web3Provider.getNetwork();
                         
+                        if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
+                            console.log(`Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
+                            const switched = await switchToBSCNetwork();
+                            if (!switched) {
+                                 setIsInitializing(false);
+                            }
+                            // Let the 'chainChanged' event handler manage state updates.
+                            return;
+                        }
+
+                        console.log('Correct network. Setting up provider for auto-reconnect...');
+                        const web3Signer = web3Provider.getSigner();
                         setProvider(web3Provider);
                         setSigner(web3Signer);
-                        setAddress(userAddress);
+                        setAddress(accounts[0]);
                         setChainId(network.chainId);
                         setIsConnected(true);
-                        console.log('Reconnected successfully to:', userAddress);
-                        
-                        // Check if we're on the right network
-                        if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
-                            toast.error('Please switch to BSC Testnet');
-                            await switchToBSCNetwork();
-                        }
+                        console.log('Reconnected successfully to:', accounts[0]);
+
                     } else {
-                        console.log('No accounts found despite localStorage flag');
+                        console.log('No accounts found authorized, clearing stored connection state.');
                         localStorage.removeItem('walletConnected');
                     }
                 } catch (error) {
-                    console.error("Failed to reconnect wallet:", error);
+                    console.error("Failed to auto-reconnect wallet:", error);
                     localStorage.removeItem('walletConnected');
                 }
             } else {
-                console.log('No localStorage connection or no ethereum provider');
-                if (!ethereum) console.log('Ethereum provider not found');
+                console.log('No ethereum provider or not previously connected.');
             }
-            
-            setIsInitialized(true);
             setIsInitializing(false);
         };
         
-        checkConnection();
-    }, []);
-
-    // Effect to handle wallet events
-    useEffect(() => {
-        const ethereum = (window as any).ethereum;
-        if (ethereum && isInitialized) {
-            ethereum.on('accountsChanged', handleAccountsChanged);
-            ethereum.on('chainChanged', handleChainChanged);
-            ethereum.on('disconnect', disconnectWallet);
-
-            // Cleanup function
-            return () => {
-                ethereum.removeListener('accountsChanged', handleAccountsChanged);
-                ethereum.removeListener('chainChanged', handleChainChanged);
-                ethereum.removeListener('disconnect', disconnectWallet);
-            };
+        // Setup listeners first
+        if ((window as any).ethereum) {
+            (window as any).ethereum.on('accountsChanged', handleAccountsChanged);
+            (window as any).ethereum.on('chainChanged', handleChainChanged);
+            (window as any).ethereum.on('disconnect', disconnectWallet);
         }
-    }, [handleAccountsChanged, handleChainChanged, disconnectWallet, isInitialized]);
 
+        checkConnection();
+        setIsInitialized(true);
+
+        return () => {
+            if ((window as any).ethereum) {
+                (window as any).ethereum.removeListener('accountsChanged', handleAccountsChanged);
+                (window as any).ethereum.removeListener('chainChanged', handleChainChanged);
+                (window as any).ethereum.removeListener('disconnect', disconnectWallet);
+            }
+        };
+    }, [handleAccountsChanged, handleChainChanged, disconnectWallet]);
 
     return (
         <WalletContext.Provider value={{ 

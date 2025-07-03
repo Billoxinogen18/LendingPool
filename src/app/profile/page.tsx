@@ -17,7 +17,11 @@ export default function ProfilePage() {
 
     // Function to check if the contract is deployed
     const checkContractDeployment = useCallback(async () => {
-        if (!provider) return false;
+        console.log('[ProfilePage] checkContractDeployment triggered.');
+        if (!provider) {
+             console.log('[ProfilePage] checkContractDeployment aborted: no provider.');
+             return false;
+        }
         
         try {
             const exists = await verifyContractExists(provider);
@@ -42,10 +46,14 @@ export default function ProfilePage() {
     }, [provider, chainId]);
 
     const fetchData = useCallback(async () => {
+        console.log('[ProfilePage] fetchData triggered.');
         if (!provider || !address) {
+            console.log('[ProfilePage] fetchData aborted: provider or address missing.');
             setIsLoading(false);
             return;
         }
+        
+        console.log(`[ProfilePage] State before fetching: isConnected=${isConnected}, chainId=${chainId}`);
         
         // Check if contract is deployed first
         const contractValid = await checkContractDeployment();
