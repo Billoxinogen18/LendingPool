@@ -7,9 +7,9 @@ import { toast } from 'react-hot-toast';
 // Read values injected at build/deploy time.  Primary var is NEXT_PUBLIC_CONTRACT_ADDRESS
 // (fall back to legacy NEXT_PUBLIC_LENDING_POOL_ADDRESS for backwards-compatibility).
 export const LENDING_POOL_ADDRESS: string =
-  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
+  (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
   process.env.NEXT_PUBLIC_LENDING_POOL_ADDRESS ||
-  '0x0000000000000000000000000000000000000000';
+  '0x0000000000000000000000000000000000000000').trim();
 
 // Determine which chain the frontend should operate on.  This is injected via
 // NEXT_PUBLIC_CHAIN_ID by the deployment script (defaults to Sepolia – 11155111).
