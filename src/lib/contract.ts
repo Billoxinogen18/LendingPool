@@ -4,13 +4,21 @@ import { ERC20_ABI } from './abi/ERC20ABI';
 import { TOKENS } from '@/constants/tokens';
 import { toast } from 'react-hot-toast';
 
-// Address injected at build time via NEXT_PUBLIC_LENDING_POOL_ADDRESS
-export const LENDING_POOL_ADDRESS: string = process.env.NEXT_PUBLIC_LENDING_POOL_ADDRESS || '0x0000000000000000000000000000000000000000';
+// Read values injected at build/deploy time.  Primary var is NEXT_PUBLIC_CONTRACT_ADDRESS
+// (fall back to legacy NEXT_PUBLIC_LENDING_POOL_ADDRESS for backwards-compatibility).
+export const LENDING_POOL_ADDRESS: string =
+  process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
+  process.env.NEXT_PUBLIC_LENDING_POOL_ADDRESS ||
+  '0x0000000000000000000000000000000000000000';
 
-// BSC Mainnet Chain ID
-export const BSC_CHAIN_ID = 56;
+// Determine which chain the frontend should operate on.  This is injected via
+// NEXT_PUBLIC_CHAIN_ID by the deployment script (defaults to Sepolia – 11155111).
+export const DEFAULT_CHAIN_ID = parseInt(
+  process.env.NEXT_PUBLIC_CHAIN_ID || '11155111'
+);
 
-export const SUPPORTED_CHAIN_IDS = [56, 97];
+// Extend this list if you want to support multiple networks simultaneously.
+export const SUPPORTED_CHAIN_IDS = [DEFAULT_CHAIN_ID];
 
 export interface IUserData {
     collateral: { [key: string]: BigNumber };
@@ -23,6 +31,25 @@ export interface IUserData {
     indebtedness: number;
 }
 
+// Create a fallback provider to improve reliability
+const createFallbackProvider = (chainId: number): ethers.providers.JsonRpcProvider => {
+    let rpcUrl: string;
+    
+    // Define RPC URLs for different networks
+    switch(chainId) {
+        case 11155111: // Sepolia
+            // Use Infura as the main RPC but fall back to public RPCs
+            rpcUrl = `https://sepolia.infura.io/v3/${process.env.NEXT_PUBLIC_INFURA_KEY || '9cfba16e9f16482f97687dca627cb64c'}`;
+            break;
+        default:
+            // Default to Sepolia
+            rpcUrl = 'https://rpc.sepolia.org';
+            break;
+    }
+    
+    return new ethers.providers.JsonRpcProvider(rpcUrl);
+};
+
 // Helper to check if contract exists at address
 export const verifyContractExists = async (provider: ethers.providers.Provider): Promise<boolean> => {
     console.log(`[verifyContractExists] Verifying contract at address: ${LENDING_POOL_ADDRESS}`);
@@ -30,16 +57,41 @@ export const verifyContractExists = async (provider: ethers.providers.Provider):
         console.error("[verifyContractExists] Lending pool address is not configured (is zero address).");
         return false;
     }
+    
     try {
         const network = await provider.getNetwork();
         console.log(`[verifyContractExists] Verifying on network: ${network.name} (chainId: ${network.chainId})`);
-        const code = await provider.getCode(LENDING_POOL_ADDRESS);
-        console.log(`[verifyContractExists] Result of getCode: (length: ${code.length})`, code.substring(0, 10) + '...');
-        const exists = code !== '0x';
-        console.log(`[verifyContractExists] Contract ${exists ? 'exists' : 'does NOT exist'}.`);
-        return exists;
+        
+        // Try the primary provider first (connected wallet)
+        try {
+            let code;
+            if ('send' in provider) {
+                // If provider has send method (Web3Provider)
+                code = await (provider as any).send("eth_getCode", [LENDING_POOL_ADDRESS, "latest"]);
+            } else {
+                // Regular provider
+                code = await provider.getCode(LENDING_POOL_ADDRESS);
+            }
+            
+            console.log(`[verifyContractExists] Result of eth_getCode: (length: ${code.length})`, code.substring(0, 10) + '...');
+            const exists = code !== '0x' && code !== '0x0';
+            console.log(`[verifyContractExists] Contract ${exists ? 'exists' : 'does NOT exist'}.`);
+            return exists;
+        } catch (primaryError) {
+            // If primary provider fails, try fallback
+            console.warn("[verifyContractExists] Primary provider failed, trying fallback:", primaryError);
+            
+            // Create a fallback provider for the same network
+            const fallbackProvider = createFallbackProvider(network.chainId);
+            const code = await fallbackProvider.getCode(LENDING_POOL_ADDRESS);
+            
+            console.log(`[verifyContractExists] Fallback result of getCode: (length: ${code.length})`, code.substring(0, 10) + '...');
+            const exists = code !== '0x' && code !== '0x0';
+            console.log(`[verifyContractExists] Fallback check: Contract ${exists ? 'exists' : 'does NOT exist'}.`);
+            return exists;
+        }
     } catch (error) {
-        console.error("[verifyContractExists] Error during getCode call:", error);
+        console.error("[verifyContractExists] Error during contract verification:", error);
         return false;
     }
 };
@@ -71,8 +123,8 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
     // Check if we're on the right network
     const network = await provider.getNetwork();
     if (!SUPPORTED_CHAIN_IDS.includes(network.chainId)) {
-        toast.error("Please connect to a supported network (BSC Mainnet or Testnet)");
-        throw new Error("Wrong network. Please connect to BSC Mainnet or Testnet.");
+        toast.error("Please connect to the correct network");
+        throw new Error("Wrong network. Please switch your wallet to the expected network.");
     }
 
     const lendingPool = getLendingPoolContract(provider);
@@ -153,7 +205,6 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
 
     return data;
 };
-
 
 // Contract write functions
 export const deposit = async (signer: ethers.Signer, tokenAddress: string, amount: BigNumber) => {

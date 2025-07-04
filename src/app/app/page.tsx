@@ -15,7 +15,7 @@ import {
     approve,
     getAllowance,
     verifyContractExists,
-    BSC_CHAIN_ID
+    SUPPORTED_CHAIN_IDS
 } from '@/lib/contract';
 import { ethers } from 'ethers';
 import { toast } from 'react-hot-toast';
@@ -51,8 +51,8 @@ export default function AppPage() {
             }
             
             // Check if we're on the right network
-            if (chainId && ![56,97].includes(chainId)) {
-                setContractError("Please connect to Binance Smart Chain network (Mainnet or Testnet)");
+            if (chainId && !SUPPORTED_CHAIN_IDS.includes(chainId)) {
+                setContractError("Please switch your wallet to the correct network.");
                 return false;
             }
             
@@ -241,7 +241,7 @@ export default function AppPage() {
                 <p className="text-xl text-gray-400 mb-4">{contractError}</p>
                 <p className="text-md text-gray-500">
                     The contract may not be deployed or you might be connected to the wrong network.
-                    <br />Please make sure you are connected to the Binance Smart Chain network.
+                    <br />Please make sure you are connected to the Sepolia network.
                 </p>
             </div>
         );
