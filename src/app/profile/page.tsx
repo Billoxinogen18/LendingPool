@@ -10,10 +10,11 @@ import UserDashboard from '@/components/UserDashboard';
 
 // Profile page to display a detailed view of the user's assets
 export default function ProfilePage() {
-    const { isConnected, provider, address, chainId, isInitializing } = useWalletContext();
+    const { isConnected, provider, address, chainId, isInitializing, ensureWalletConnected } = useWalletContext();
     const [userData, setUserData] = useState<IUserData | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [contractError, setContractError] = useState<string | null>(null);
+    const [dataFetchInProgress, setDataFetchInProgress] = useState(false);
 
     // Function to check if the contract is deployed
     const checkContractDeployment = useCallback(async () => {
@@ -47,6 +48,17 @@ export default function ProfilePage() {
 
     const fetchData = useCallback(async () => {
         console.log('[ProfilePage] fetchData triggered.');
+        
+        // First ensure wallet is connected
+        if (!isConnected) {
+            const connected = await ensureWalletConnected();
+            if (!connected) {
+                console.log('[ProfilePage] fetchData aborted: wallet connection failed.');
+                setIsLoading(false);
+                return;
+            }
+        }
+        
         if (!provider || !address) {
             console.log('[ProfilePage] fetchData aborted: provider or address missing.');
             setIsLoading(false);
@@ -55,14 +67,22 @@ export default function ProfilePage() {
         
         console.log(`[ProfilePage] State before fetching: isConnected=${isConnected}, chainId=${chainId}`);
         
+        // Prevent multiple simultaneous fetches
+        if (dataFetchInProgress) {
+            console.log('[ProfilePage] A data fetch is already in progress, skipping.');
+            return;
+        }
+        
+        setDataFetchInProgress(true);
+        
         // Check if contract is deployed first
         const contractValid = await checkContractDeployment();
         if (!contractValid) {
             setIsLoading(false);
+            setDataFetchInProgress(false);
             return;
         }
         
-        setIsLoading(true);
         try {
             const data = await getUserData(provider, address);
             setUserData(data);
@@ -71,38 +91,56 @@ export default function ProfilePage() {
             toast.error("Could not fetch your data from the network.");
         } finally {
             setIsLoading(false);
+            setDataFetchInProgress(false);
         }
-    }, [provider, address, checkContractDeployment]);
+    }, [provider, address, checkContractDeployment, isConnected, chainId, ensureWalletConnected, dataFetchInProgress]);
 
     useEffect(() => {
-        if (isConnected) {
+        // If wallet is connected or just initialized, fetch data
+        if ((isConnected || !isInitializing) && !dataFetchInProgress) {
             fetchData();
             
-            // Set up interval to refresh data every 30 seconds
+            // Set up interval to refresh data every 60 seconds
             const intervalId = setInterval(() => {
-                fetchData();
-            }, 30000);
+                if (!dataFetchInProgress) {
+                    fetchData();
+                }
+            }, 60000);
             
             return () => clearInterval(intervalId);
-        } else {
+        } else if (!isConnected && !isInitializing) {
             setIsLoading(false);
             setUserData(null);
         }
-    }, [isConnected, fetchData, chainId]);
+    }, [isConnected, fetchData, isInitializing, dataFetchInProgress]);
 
+    // If wallet is initializing, show a loading state
     if (isInitializing) {
-        return <div className="text-center text-white p-10">Connecting wallet...</div>;
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)]">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                <p className="text-white text-lg">Connecting to wallet...</p>
+            </div>
+        );
     }
 
+    // If wallet is not connected, show a connection prompt
     if (!isConnected) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)] text-center">
                 <h1 className="text-4xl font-bold text-white mb-4">My Profile</h1>
-                <p className="text-xl text-gray-400">Connect your wallet to view your detailed positions.</p>
+                <p className="text-xl text-gray-400 mb-6">Connect your wallet to view your detailed positions.</p>
+                <button 
+                    onClick={() => ensureWalletConnected()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg text-lg font-medium transition-colors"
+                >
+                    Connect Wallet
+                </button>
             </div>
         );
     }
     
+    // If there's a contract error, show the error
     if (contractError) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)] text-center">
@@ -116,8 +154,14 @@ export default function ProfilePage() {
         );
     }
 
+    // If data is loading, show a loading indicator
     if (isLoading) {
-        return <div className="text-center text-white p-10">Loading your profile...</div>;
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)]">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                <p className="text-white text-lg">Loading your profile...</p>
+            </div>
+        );
     }
 
     if (!userData) {

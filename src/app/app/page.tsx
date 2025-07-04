@@ -1,7 +1,5 @@
 "use client";
 
-
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { useWalletContext } from '@/contexts/WalletContext';
 import { TOKENS, Token } from '@/constants/tokens';
@@ -25,7 +23,7 @@ import UserDashboard from '@/components/UserDashboard';
 
 // Main application component for the Lending Pool
 export default function AppPage() {
-    const { isConnected, provider, address, signer, chainId, isInitializing } = useWalletContext();
+    const { isConnected, provider, address, signer, chainId, isInitializing, ensureWalletConnected } = useWalletContext();
     const [userData, setUserData] = useState<IUserData | null>(null);
     const [marketData, setMarketData] = useState<Token[]>(TOKENS);
     const [isLoading, setIsLoading] = useState(true);
@@ -34,6 +32,7 @@ export default function AppPage() {
     const [modalType, setModalType] = useState<'supply' | 'withdraw' | 'borrow' | 'repay' | null>(null);
     const [isProcessingTransaction, setIsProcessingTransaction] = useState(false);
     const [contractError, setContractError] = useState<string | null>(null);
+    const [dataFetchInProgress, setDataFetchInProgress] = useState(false);
 
     // Function to check if the contract is deployed
     const checkContractDeployment = useCallback(async () => {
@@ -68,6 +67,17 @@ export default function AppPage() {
     // Function to fetch all required data from the blockchain
     const fetchData = useCallback(async () => {
         console.log('[AppPage] fetchData triggered.');
+        
+        // First ensure wallet is connected
+        if (!isConnected) {
+            const connected = await ensureWalletConnected();
+            if (!connected) {
+                console.log('[AppPage] fetchData aborted: wallet connection failed.');
+                setIsLoading(false);
+                return;
+            }
+        }
+        
         if (!provider || !address) {
             console.log('[AppPage] fetchData aborted: provider or address missing.');
             setIsLoading(false);
@@ -76,20 +86,22 @@ export default function AppPage() {
         
         console.log(`[AppPage] State before fetching: isConnected=${isConnected}, chainId=${chainId}`);
 
-        // Check if contract is deployed first
-        const contractValid = await checkContractDeployment();
-        if (!contractValid) {
-            setIsLoading(false);
-            return;
-        }
-        
         // Prevent multiple simultaneous fetches
-        if (isLoading) {
+        if (dataFetchInProgress) {
             console.log('[AppPage] A data fetch is already in progress, skipping.');
             return;
         }
         
-        setIsLoading(true);
+        setDataFetchInProgress(true);
+        
+        // Check if contract is deployed first
+        const contractValid = await checkContractDeployment();
+        if (!contractValid) {
+            setIsLoading(false);
+            setDataFetchInProgress(false);
+            return;
+        }
+        
         try {
             const data = await getUserData(provider, address);
             setUserData(data);
@@ -114,25 +126,28 @@ export default function AppPage() {
             }
         } finally {
             setIsLoading(false);
+            setDataFetchInProgress(false);
         }
-    }, [provider, address, isLoading, checkContractDeployment, chainId, isConnected]);
+    }, [provider, address, isConnected, checkContractDeployment, chainId, ensureWalletConnected, dataFetchInProgress]);
 
     useEffect(() => {
-        if (isConnected) {
+        // If wallet is connected or just initialized, fetch data
+        if ((isConnected || !isInitializing) && !dataFetchInProgress) {
             fetchData();
             
-            // Set up interval to refresh data every 60 seconds instead of 30
-            // to reduce the number of API calls
+            // Set up interval to refresh data every 60 seconds
             const intervalId = setInterval(() => {
-                fetchData();
+                if (!dataFetchInProgress) {
+                    fetchData();
+                }
             }, 60000);
             
             return () => clearInterval(intervalId);
-        } else {
+        } else if (!isConnected && !isInitializing) {
             setIsLoading(false);
             setUserData(null);
         }
-    }, [isConnected, fetchData]);
+    }, [isConnected, fetchData, isInitializing, dataFetchInProgress]);
 
     // Handlers to open different types of modals
     const openModal = (token: Token, type: 'supply' | 'withdraw' | 'borrow' | 'repay') => {
@@ -149,6 +164,15 @@ export default function AppPage() {
 
     // Main transaction handler
     const handleTransaction = async (amount: string, token: Token, type: 'supply' | 'withdraw' | 'borrow' | 'repay') => {
+        // First ensure wallet is connected
+        if (!isConnected) {
+            const connected = await ensureWalletConnected();
+            if (!connected) {
+                toast.error("Please connect your wallet to proceed");
+                return;
+            }
+        }
+        
         if (!signer || !address) {
             toast.error("Wallet not connected");
             return;
@@ -228,20 +252,33 @@ export default function AppPage() {
         }
     };
 
-
+    // If wallet is initializing, show a loading state
     if (isInitializing) {
-        return <div className="text-center text-white py-10">Connecting wallet...</div>;
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)]">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                <p className="text-white text-lg">Connecting to wallet...</p>
+            </div>
+        );
     }
 
+    // If wallet is not connected, show a connection prompt
     if (!isConnected) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)] text-center">
                 <h1 className="text-4xl font-bold text-white mb-4">Welcome to the Lending Pool</h1>
-                <p className="text-xl text-gray-400">Please connect your wallet to manage your assets.</p>
+                <p className="text-xl text-gray-400 mb-6">Please connect your wallet to manage your assets.</p>
+                <button 
+                    onClick={() => ensureWalletConnected()}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg text-lg font-medium transition-colors"
+                >
+                    Connect Wallet
+                </button>
             </div>
         );
     }
     
+    // If there's a contract error, show the error
     if (contractError) {
         return (
             <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)] text-center">
@@ -255,8 +292,14 @@ export default function AppPage() {
         );
     }
 
+    // If data is loading, show a loading indicator
     if (isLoading) {
-        return <div className="text-center text-white py-10">Loading your lending data...</div>;
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-200px)]">
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                <p className="text-white text-lg">Loading your lending data...</p>
+            </div>
+        );
     }
 
     return (
@@ -343,6 +386,10 @@ export default function AppPage() {
                         </thead>
                         <tbody>
                             {marketData.map(token => {
+                                const available = userData && userData.reserves && userData.reserves[token.address]
+                                    ? ethers.utils.formatUnits(userData.reserves[token.address], token.decimals)
+                                    : '0';
+                                
                                 return (
                                     <tr key={token.address} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
                                         <td className="p-4">
@@ -354,14 +401,15 @@ export default function AppPage() {
                                                 </div>
                                             </div>
                                         </td>
-                                        <td className="p-4 text-right text-white">100.00</td>
+                                        <td className="p-4 text-right text-white">{parseFloat(available).toFixed(4)}</td>
                                         <td className="p-4 text-right text-red-400">5.2%</td>
                                         <td className="p-4 text-right text-white">{token.borrowed || '0.00'}</td>
                                         <td className="p-4 text-right">
                                             <div className="flex justify-end space-x-2">
                                                 <button 
                                                     onClick={() => openModal(token, 'borrow')}
-                                                    className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-1 rounded-md transition-colors"
+                                                    disabled={parseFloat(available) <= 0}
+                                                    className={`${parseFloat(available) > 0 ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-600 cursor-not-allowed'} text-white px-4 py-1 rounded-md transition-colors`}
                                                 >
                                                     Borrow
                                                 </button>

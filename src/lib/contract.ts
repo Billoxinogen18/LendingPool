@@ -25,6 +25,7 @@ export interface IUserData {
     debt: { [key: string]: BigNumber };
     walletBalances: { [key: string]: BigNumber };
     prices: { [key: string]: BigNumber };
+    reserves: { [key: string]: BigNumber }; // Add reserves property
     totalCollateralUSD: BigNumber;
     totalDebtUSD: BigNumber;
     borrowCapacity: BigNumber;
@@ -135,6 +136,7 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
         debt: {},
         walletBalances: {},
         prices: {},
+        reserves: {}, // Initialize reserves
         totalCollateralUSD: BigNumber.from(0),
         totalDebtUSD: BigNumber.from(0),
         borrowCapacity: BigNumber.from(0),
@@ -172,6 +174,15 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
                 }
                 data.prices[token.address] = price;
                 
+                // Fetch pool reserves
+                let reserves = BigNumber.from(0);
+                try {
+                    reserves = await lendingPool.reserves(token.address);
+                } catch (error) {
+                    console.warn(`Failed to fetch reserves for ${token.symbol}:`, error);
+                }
+                data.reserves[token.address] = reserves;
+                
                 // Fetch balance with fallbacks
                 let balance = BigNumber.from(0);
                 try {
@@ -192,6 +203,7 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
                 data.debt[token.address] = BigNumber.from(0);
                 data.prices[token.address] = BigNumber.from(0);
                 data.walletBalances[token.address] = BigNumber.from(0);
+                data.reserves[token.address] = BigNumber.from(0);
             }
         }
 

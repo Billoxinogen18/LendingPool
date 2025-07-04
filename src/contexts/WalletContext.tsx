@@ -14,6 +14,7 @@ interface IWalletContext {
     disconnectWallet: () => void;
     chainId: number | null;
     isInitializing: boolean;
+    ensureWalletConnected: () => Promise<boolean>;
 }
 
 // Create the context with a default value
@@ -26,13 +27,37 @@ const WalletContext = createContext<IWalletContext>({
     disconnectWallet: () => {},
     chainId: null,
     isInitializing: true,
+    ensureWalletConnected: async () => false,
 });
 
-// Preferred default: BSC Testnet (chain id 97)
-const BSC_TESTNET_CHAIN_ID = 97;
+// Determine the chain the frontend expects – injected via NEXT_PUBLIC_CHAIN_ID
+const DEFAULT_CHAIN_ID = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID || '11155111');
 
-// At top after BSC_TESTNET_CHAIN_ID define SUPPORTED_CHAIN_IDS
-const SUPPORTED_CHAIN_IDS = [56, 97];
+// Backwards-compat: keep the old variable name but point it at DEFAULT_CHAIN_ID so
+// existing references continue to work until we finish the refactor.
+const BSC_TESTNET_CHAIN_ID = DEFAULT_CHAIN_ID;
+
+// Limit support to the configured chain for now (extend as needed)
+const SUPPORTED_CHAIN_IDS = [DEFAULT_CHAIN_ID];
+
+const NETWORKS: Record<number, any> = {
+  11155111: {
+    chainIdHex: '0xaa36a7',
+    chainName: 'Sepolia Testnet',
+    nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://rpc.sepolia.org', 'https://sepolia.infura.io/v3/9cfba16e9f16482f97687dca627cb64c'],
+    blockExplorerUrls: ['https://sepolia.etherscan.io']
+  },
+  1: {
+    chainIdHex: '0x1',
+    chainName: 'Ethereum Mainnet',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://cloudflare-eth.com'],
+    blockExplorerUrls: ['https://etherscan.io']
+  }
+};
+
+const networkParams = NETWORKS[DEFAULT_CHAIN_ID];
 
 // Create a provider component
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
@@ -43,12 +68,13 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     const [isInitialized, setIsInitialized] = useState<boolean>(false);
     const [chainId, setChainId] = useState<number | null>(null);
     const [isInitializing, setIsInitializing] = useState<boolean>(true);
+    const [connectionAttempts, setConnectionAttempts] = useState<number>(0);
 
-    const switchToBSCNetwork = async () => {
+    const switchToCorrectNetwork = async () => {
         try {
             await (window as any).ethereum.request({
                 method: 'wallet_switchEthereumChain',
-                params: [{ chainId: '0x61' }], // BSC Testnet Chain ID in hex
+                params: [{ chainId: networkParams.chainIdHex }], // dynamic chain id
             });
             return true;
         } catch (switchError: any) {
@@ -59,27 +85,23 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                         method: 'wallet_addEthereumChain',
                         params: [
                             {
-                                chainId: '0x61',
-                                chainName: 'Binance Smart Chain Testnet',
-                                nativeCurrency: {
-                                    name: 'BNB',
-                                    symbol: 'BNB',
-                                    decimals: 18
-                                },
-                                rpcUrls: ['https://data-seed-prebsc-1-s1.binance.org:8545/'],
-                                blockExplorerUrls: ['https://testnet.bscscan.com']
+                                chainId: networkParams.chainIdHex,
+                                chainName: networkParams.chainName,
+                                nativeCurrency: networkParams.nativeCurrency,
+                                rpcUrls: networkParams.rpcUrls,
+                                blockExplorerUrls: networkParams.blockExplorerUrls,
                             }
                         ],
                     });
                     return true;
                 } catch (addError) {
-                    console.error('Error adding BSC network:', addError);
-                    toast.error('Failed to add BSC network to your wallet');
+                    console.error('Error adding network to wallet:', addError);
+                    toast.error(`Failed to add ${networkParams.chainName} to your wallet`);
                     return false;
                 }
             }
-            console.error('Error switching to BSC network:', switchError);
-            toast.error('Failed to switch to BSC network');
+            console.error('Error switching network:', switchError);
+            toast.error(`Failed to switch to ${networkParams.chainName}`);
             return false;
         }
     };
@@ -117,8 +139,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         setChainId(newChainId);
         
         if (newChainId !== BSC_TESTNET_CHAIN_ID) {
-            toast.error('Please switch to BSC Testnet');
-            await switchToBSCNetwork();
+            toast.error(`Please switch to ${networkParams.chainName}`);
+            await switchToCorrectNetwork();
         } else {
             // Refresh provider and signer with new chain
             try {
@@ -173,18 +195,12 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
 
                 if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
                     console.log(`Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
-                    const switched = await switchToBSCNetwork();
+                    const switched = await switchToCorrectNetwork();
                     if (!switched) {
-                        toast.error('Please switch to BSC Testnet to proceed.');
+                        toast.error(`Please switch to ${networkParams.chainName} to proceed.`);
                         setIsInitializing(false);
                         return;
                     }
-                    // The chainChanged event handler will now correctly take over
-                    localStorage.setItem('walletConnected', 'true');
-                    // We don't need to set the rest of the state, the event handler will.
-                    // Set isInitializing to false after a brief delay to allow event to propagate
-                    setTimeout(() => setIsInitializing(false), 1000);
-                    return;
                 }
                 
                 console.log('Correct network. Setting up provider...');
@@ -212,6 +228,34 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         }
     };
 
+    // Helper function to ensure wallet is connected
+    const ensureWalletConnected = async (): Promise<boolean> => {
+        if (isConnected && provider && address) {
+            return true;
+        }
+        
+        // If we're already initializing, wait for it to complete
+        if (isInitializing) {
+            return new Promise((resolve) => {
+                const checkInterval = setInterval(() => {
+                    if (!isInitializing) {
+                        clearInterval(checkInterval);
+                        resolve(isConnected);
+                    }
+                }, 500);
+            });
+        }
+        
+        // Only try to auto-connect if we haven't exceeded attempts
+        if (connectionAttempts < 2) {
+            setConnectionAttempts(prev => prev + 1);
+            await connectWallet();
+            return isConnected;
+        }
+        
+        return false;
+    };
+
     // Effect to check if wallet is already connected on page load
     useEffect(() => {
         const checkConnection = async () => {
@@ -228,12 +272,11 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                         
                         if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
                             console.log(`Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
-                            const switched = await switchToBSCNetwork();
+                            const switched = await switchToCorrectNetwork();
                             if (!switched) {
                                  setIsInitializing(false);
+                                 return;
                             }
-                            // Let the 'chainChanged' event handler manage state updates.
-                            return;
                         }
 
                         console.log('Correct network. Setting up provider for auto-reconnect...');
@@ -287,7 +330,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
             connectWallet, 
             disconnectWallet,
             chainId,
-            isInitializing
+            isInitializing,
+            ensureWalletConnected
         }}>
             {children}
         </WalletContext.Provider>
