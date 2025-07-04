@@ -287,6 +287,13 @@ export const repay = async (signer: ethers.Signer, tokenAddress: string, amount:
     return tx;
 };
 
+// Liquidation function
+export const liquidate = async (signer: ethers.Signer, userToLiquidate: string) => {
+    const lendingPool = getLendingPoolContract(signer);
+    const tx = await lendingPool.liquidate(userToLiquidate);
+    return tx;
+};
+
 // ERC20 approval functions
 export const approve = async (signer: ethers.Signer, tokenAddress: string, amount: BigNumber) => {
     const erc20 = getErc20Contract(tokenAddress, signer);
