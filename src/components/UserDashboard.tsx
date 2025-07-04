@@ -4,6 +4,7 @@ import { ethers } from 'ethers';
 
 interface UserDashboardProps {
     userData: IUserData | null;
+    isLoading?: boolean;
 }
 
 const StatCard = ({ label, value, className = '' }: { label: string, value: string, className?: string }) => (
@@ -13,8 +14,17 @@ const StatCard = ({ label, value, className = '' }: { label: string, value: stri
     </div>
 );
 
+const LoadingStatCard = ({ label }: { label: string }) => (
+    <div className="bg-gray-800/70 p-6 rounded-xl border border-gray-700">
+        <p className="text-gray-400 text-sm mb-2">{label}</p>
+        <div className="h-8 bg-gray-700 rounded animate-pulse"></div>
+    </div>
+);
+
 const HealthFactor = ({ value }: { value: number }) => {
-    const percentage = 100 - value;
+    // Ensure value is a valid number and clamp between 0-100
+    const safeValue = isNaN(value) ? 0 : Math.min(100, Math.max(0, value));
+    const percentage = 100 - safeValue;
     const circumference = 2 * Math.PI * 45;
     const offset = circumference - (percentage / 100) * circumference;
 
@@ -47,26 +57,66 @@ const HealthFactor = ({ value }: { value: number }) => {
     );
 };
 
+const LoadingHealthFactor = () => (
+    <div className="relative flex items-center justify-center">
+        <svg className="w-32 h-32 transform -rotate-90">
+            <circle cx="64" cy="64" r="45" stroke="currentColor" strokeWidth="10" className="text-gray-700" fill="transparent" />
+            <circle cx="64" cy="64" r="45" stroke="currentColor" strokeWidth="10" className="text-gray-600 animate-pulse" fill="transparent" />
+        </svg>
+        <div className="absolute flex flex-col items-center justify-center">
+            <div className="h-6 w-16 bg-gray-700 rounded animate-pulse"></div>
+            <span className="text-xs text-gray-400 mt-1">Health</span>
+        </div>
+    </div>
+);
 
-const UserDashboard: React.FC<UserDashboardProps> = ({ userData }) => {
-    if (!userData) {
+const UserDashboard: React.FC<UserDashboardProps> = ({ userData, isLoading = false }) => {
+    if (!userData && !isLoading) {
         return null;
     }
 
-    const totalCollateralUSD = ethers.utils.formatEther(userData.totalCollateralUSD);
-    const totalDebtUSD = ethers.utils.formatEther(userData.totalDebtUSD);
-    const borrowCapacity = ethers.utils.formatEther(userData.borrowCapacity);
+    if (isLoading || !userData) {
+        return (
+            <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl p-6 md:p-8 border border-gray-700">
+                <h2 className="text-2xl font-bold text-white mb-6">My Dashboard</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-center">
+                    <LoadingStatCard label="Total Supplied" />
+                    <LoadingStatCard label="Total Borrowed" />
+                    <LoadingStatCard label="Borrow Capacity" />
+                    <div className="flex justify-center items-center">
+                        <LoadingHealthFactor />
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Format values safely
+    const formatValue = (value: ethers.BigNumber) => {
+        try {
+            const formatted = ethers.utils.formatEther(value);
+            const parsedValue = parseFloat(formatted);
+            return isNaN(parsedValue) ? "0.00" : parsedValue.toFixed(2);
+        } catch (e) {
+            console.error("Failed to format value:", e);
+            return "0.00";
+        }
+    };
+
+    const totalCollateralUSD = formatValue(userData.totalCollateralUSD);
+    const totalDebtUSD = formatValue(userData.totalDebtUSD);
+    const borrowCapacity = formatValue(userData.borrowCapacity);
     const healthFactor = userData.indebtedness;
 
     return (
         <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl p-6 md:p-8 border border-gray-700">
             <h2 className="text-2xl font-bold text-white mb-6">My Dashboard</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-center">
-                <StatCard label="Total Supplied" value={`$${parseFloat(totalCollateralUSD).toFixed(2)}`} />
-                <StatCard label="Total Borrowed" value={`$${parseFloat(totalDebtUSD).toFixed(2)}`} />
-                <StatCard label="Borrow Capacity" value={`$${parseFloat(borrowCapacity).toFixed(2)}`} />
+                <StatCard label="Total Supplied" value={`$${totalCollateralUSD}`} />
+                <StatCard label="Total Borrowed" value={`$${totalDebtUSD}`} />
+                <StatCard label="Borrow Capacity" value={`$${borrowCapacity}`} />
                 <div className="flex justify-center items-center">
-                     <HealthFactor value={healthFactor} />
+                    <HealthFactor value={healthFactor} />
                 </div>
             </div>
         </div>

@@ -83,6 +83,12 @@ export default function AppPage() {
             return;
         }
         
+        // Prevent multiple simultaneous fetches
+        if (isLoading) {
+            console.log('[AppPage] A data fetch is already in progress, skipping.');
+            return;
+        }
+        
         setIsLoading(true);
         try {
             const data = await getUserData(provider, address);
@@ -90,6 +96,7 @@ export default function AppPage() {
 
             // Update market data with user-specific balances
             const updatedMarketData = TOKENS.map(token => {
+                // Use previous data as fallback if available to prevent UI jumps
                 const supplied = data.collateral[token.address] 
                     ? ethers.utils.formatUnits(data.collateral[token.address], token.decimals) 
                     : '0';
@@ -108,23 +115,24 @@ export default function AppPage() {
         } finally {
             setIsLoading(false);
         }
-    }, [provider, address, isLoading, checkContractDeployment]);
+    }, [provider, address, isLoading, checkContractDeployment, chainId, isConnected]);
 
     useEffect(() => {
         if (isConnected) {
             fetchData();
             
-            // Set up interval to refresh data every 30 seconds
+            // Set up interval to refresh data every 60 seconds instead of 30
+            // to reduce the number of API calls
             const intervalId = setInterval(() => {
                 fetchData();
-            }, 30000);
+            }, 60000);
             
             return () => clearInterval(intervalId);
         } else {
             setIsLoading(false);
             setUserData(null);
         }
-    }, [isConnected, fetchData, chainId]);
+    }, [isConnected, fetchData]);
 
     // Handlers to open different types of modals
     const openModal = (token: Token, type: 'supply' | 'withdraw' | 'borrow' | 'repay') => {
@@ -252,97 +260,130 @@ export default function AppPage() {
     }
 
     return (
-        <div className="container mx-auto p-4 md:p-8">
-            <UserDashboard userData={userData} />
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
-                {/* Supply Section */}
-                <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
-                    <h2 className="text-2xl font-bold text-white mb-4">Assets to Supply</h2>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                            <thead>
-                                <tr className="border-b border-gray-700">
-                                    <th className="p-3 text-gray-400">Asset</th>
-                                    <th className="p-3 text-gray-400 text-right">Supplied</th>
-                                    <th className="p-3 text-gray-400 text-center">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {marketData.map(token => (
-                                    <tr key={token.address} className="border-b border-gray-800 hover:bg-gray-800/50">
-                                        <td className="p-3 flex items-center gap-3">
-                                            <img src={token.logo} alt={token.name} className="w-8 h-8"/>
-                                            <span className="font-bold text-white">{token.symbol}</span>
-                                        </td>
-                                        <td className="p-3 text-right text-white">{parseFloat(token.supplied || '0').toFixed(4)}</td>
-                                        <td className="p-3 text-center space-x-2">
-                                            <button 
-                                                onClick={() => openModal(token, 'supply')} 
-                                                className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-                                                disabled={isProcessingTransaction}
-                                            >
-                                                Supply
-                                            </button>
-                                            <button 
-                                                onClick={() => openModal(token, 'withdraw')} 
-                                                className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-                                                disabled={isProcessingTransaction}
-                                            >
-                                                Withdraw
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+        <div className="px-4 max-w-7xl mx-auto">
+            {userData && (
+                <div className="my-8">
+                    <UserDashboard userData={userData} isLoading={isLoading} />
                 </div>
+            )}
 
-                {/* Borrow Section */}
-                <div className="bg-gray-900/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
-                    <h2 className="text-2xl font-bold text-white mb-4">Assets to Borrow</h2>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                            <thead>
-                                <tr className="border-b border-gray-700">
-                                    <th className="p-3 text-gray-400">Asset</th>
-                                    <th className="p-3 text-gray-400 text-right">Borrowed</th>
-                                    <th className="p-3 text-gray-400 text-center">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {marketData.map(token => (
-                                    <tr key={token.address} className="border-b border-gray-800 hover:bg-gray-800/50">
-                                        <td className="p-3 flex items-center gap-3">
-                                            <img src={token.logo} alt={token.name} className="w-8 h-8"/>
-                                            <span className="font-bold text-white">{token.symbol}</span>
+            {/* Supply Markets */}
+            <div className="my-12">
+                <h2 className="text-2xl font-bold text-white mb-6">Supply Markets</h2>
+                <div className="overflow-x-auto">
+                    <table className="w-full bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-700">
+                        <thead>
+                            <tr className="border-b border-gray-700">
+                                <th className="text-left p-4 text-gray-400">Asset</th>
+                                <th className="text-right p-4 text-gray-400">Wallet Balance</th>
+                                <th className="text-right p-4 text-gray-400">APY</th>
+                                <th className="text-right p-4 text-gray-400">Total Supplied</th>
+                                <th className="text-right p-4 text-gray-400"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {marketData.map(token => {
+                                const walletBalance = userData && userData.walletBalances[token.address] 
+                                    ? ethers.utils.formatUnits(userData.walletBalances[token.address], token.decimals)
+                                    : '0';
+
+                                return (
+                                    <tr key={token.address} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
+                                        <td className="p-4">
+                                            <div className="flex items-center">
+                                                <img src={token.logo} alt={token.name} className="w-8 h-8 mr-3" />
+                                                <div>
+                                                    <p className="text-white font-medium">{token.symbol}</p>
+                                                    <p className="text-gray-400 text-sm">{token.name}</p>
+                                                </div>
+                                            </div>
                                         </td>
-                                        <td className="p-3 text-right text-white">{parseFloat(token.borrowed || '0').toFixed(4)}</td>
-                                        <td className="p-3 text-center space-x-2">
-                                            <button 
-                                                onClick={() => openModal(token, 'borrow')} 
-                                                className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-                                                disabled={isProcessingTransaction}
-                                            >
-                                                Borrow
-                                            </button>
-                                            <button 
-                                                onClick={() => openModal(token, 'repay')} 
-                                                className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-                                                disabled={isProcessingTransaction}
-                                            >
-                                                Repay
-                                            </button>
+                                        <td className="p-4 text-right text-white">{parseFloat(walletBalance).toFixed(4)}</td>
+                                        <td className="p-4 text-right text-green-400">3.5%</td>
+                                        <td className="p-4 text-right text-white">{token.supplied || '0.00'}</td>
+                                        <td className="p-4 text-right">
+                                            <div className="flex justify-end space-x-2">
+                                                <button 
+                                                    onClick={() => openModal(token, 'supply')}
+                                                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1 rounded-md transition-colors"
+                                                >
+                                                    Supply
+                                                </button>
+                                                {token.supplied && parseFloat(token.supplied) > 0 && (
+                                                    <button 
+                                                        onClick={() => openModal(token, 'withdraw')}
+                                                        className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-1 rounded-md transition-colors"
+                                                    >
+                                                        Withdraw
+                                                    </button>
+                                                )}
+                                            </div>
                                         </td>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                                );
+                            })}
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
+            {/* Borrow Markets */}
+            <div className="my-12">
+                <h2 className="text-2xl font-bold text-white mb-6">Borrow Markets</h2>
+                <div className="overflow-x-auto">
+                    <table className="w-full bg-gray-900/50 backdrop-blur-sm rounded-xl border border-gray-700">
+                        <thead>
+                            <tr className="border-b border-gray-700">
+                                <th className="text-left p-4 text-gray-400">Asset</th>
+                                <th className="text-right p-4 text-gray-400">Available</th>
+                                <th className="text-right p-4 text-gray-400">APY</th>
+                                <th className="text-right p-4 text-gray-400">Total Borrowed</th>
+                                <th className="text-right p-4 text-gray-400"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {marketData.map(token => {
+                                return (
+                                    <tr key={token.address} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
+                                        <td className="p-4">
+                                            <div className="flex items-center">
+                                                <img src={token.logo} alt={token.name} className="w-8 h-8 mr-3" />
+                                                <div>
+                                                    <p className="text-white font-medium">{token.symbol}</p>
+                                                    <p className="text-gray-400 text-sm">{token.name}</p>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="p-4 text-right text-white">100.00</td>
+                                        <td className="p-4 text-right text-red-400">5.2%</td>
+                                        <td className="p-4 text-right text-white">{token.borrowed || '0.00'}</td>
+                                        <td className="p-4 text-right">
+                                            <div className="flex justify-end space-x-2">
+                                                <button 
+                                                    onClick={() => openModal(token, 'borrow')}
+                                                    className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-1 rounded-md transition-colors"
+                                                >
+                                                    Borrow
+                                                </button>
+                                                {token.borrowed && parseFloat(token.borrowed) > 0 && (
+                                                    <button 
+                                                        onClick={() => openModal(token, 'repay')}
+                                                        className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-1 rounded-md transition-colors"
+                                                    >
+                                                        Repay
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            {/* Modal */}
             {isModalOpen && selectedToken && modalType && (
                 modalType === 'supply' || modalType === 'withdraw' ?
                 <SupplyModal

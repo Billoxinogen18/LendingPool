@@ -142,27 +142,48 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
     };
 
     try {
-        // Fetch data in parallel for each token
-        await Promise.all(TOKENS.map(async (token) => {
+        // Fetch data for each token serially to avoid overloading the provider
+        for (const token of TOKENS) {
             try {
                 const isNative = token.address === nativeTokenAddress;
                 
                 // Fetch collateral
-                const collateralResult = await lendingPool.userCollateral(userAddress, token.address);
+                const collateralResult = await lendingPool.userCollateral(userAddress, token.address)
+                    .catch(() => ({ amount: BigNumber.from(0) }));
+                
                 // For userCollateral, the return is a struct with an 'amount' property
-                data.collateral[token.address] = collateralResult.amount || collateralResult;
+                data.collateral[token.address] = collateralResult.amount || collateralResult || BigNumber.from(0);
                 
-                // Fetch other data
-                const [debt, price, balance] = await Promise.all([
-                    lendingPool.userDebt(userAddress, token.address),
-                    lendingPool.getTokenPrice(token.address),
-                    isNative 
-                        ? provider.getBalance(userAddress) 
-                        : getErc20Contract(token.address, provider).balanceOf(userAddress)
-                ]);
-                
+                // Fetch debt with fallbacks
+                let debt = BigNumber.from(0);
+                try {
+                    debt = await lendingPool.userDebt(userAddress, token.address);
+                } catch (error) {
+                    console.warn(`Failed to fetch debt for ${token.symbol}:`, error);
+                }
                 data.debt[token.address] = debt;
+                
+                // Fetch price with fallbacks
+                let price = BigNumber.from(0);
+                try {
+                    price = await lendingPool.getTokenPrice(token.address);
+                } catch (error) {
+                    console.warn(`Failed to fetch price for ${token.symbol}:`, error);
+                }
                 data.prices[token.address] = price;
+                
+                // Fetch balance with fallbacks
+                let balance = BigNumber.from(0);
+                try {
+                    if (isNative) {
+                        balance = await provider.getBalance(userAddress);
+                    } else {
+                        const erc20 = getErc20Contract(token.address, provider);
+                        balance = await erc20.balanceOf(userAddress);
+                    }
+                } catch (error) {
+                    console.warn(`Failed to fetch balance for ${token.symbol}:`, error);
+                }
                 data.walletBalances[token.address] = balance;
             } catch (error) {
                 console.error(`Error fetching data for token ${token.symbol}:`, error);
@@ -172,7 +193,7 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
                 data.prices[token.address] = BigNumber.from(0);
                 data.walletBalances[token.address] = BigNumber.from(0);
             }
-        }));
+        }
 
         // Fetch aggregate data
         try {
@@ -181,20 +202,34 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
             for (const token of TOKENS) {
                 const amount = data.collateral[token.address] || BigNumber.from(0);
                 const price = data.prices[token.address] || BigNumber.from(0);
-                totalCollateral = totalCollateral.add(amount.mul(price).div(ethers.utils.parseEther('1')));
+                if (!amount.isZero() && !price.isZero()) {
+                    totalCollateral = totalCollateral.add(amount.mul(price).div(ethers.utils.parseEther('1')));
+                }
             }
             data.totalCollateralUSD = totalCollateral;
             
             // Get other aggregate data
-            const [totalDebtUSD, borrowCapacity, indebtedness] = await Promise.all([
-                lendingPool.getTotalDebtUSD(userAddress),
-                lendingPool.getBorrowCapacity(userAddress),
-                lendingPool.getIndebtedness(userAddress)
-            ]);
+            try {
+                data.totalDebtUSD = await lendingPool.getTotalDebtUSD(userAddress);
+            } catch (error) {
+                console.warn("Failed to fetch total debt:", error);
+                data.totalDebtUSD = BigNumber.from(0);
+            }
             
-            data.totalDebtUSD = totalDebtUSD;
-            data.borrowCapacity = borrowCapacity;
-            data.indebtedness = indebtedness.toNumber();
+            try {
+                data.borrowCapacity = await lendingPool.getBorrowCapacity(userAddress);
+            } catch (error) {
+                console.warn("Failed to fetch borrow capacity:", error);
+                data.borrowCapacity = BigNumber.from(0);
+            }
+            
+            try {
+                const indebtedness = await lendingPool.getIndebtedness(userAddress);
+                data.indebtedness = indebtedness.toNumber();
+            } catch (error) {
+                console.warn("Failed to fetch indebtedness:", error);
+                data.indebtedness = 0;
+            }
         } catch (error) {
             console.error("Error fetching aggregate data:", error);
         }
