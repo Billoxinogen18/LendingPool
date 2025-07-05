@@ -568,7 +568,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         // If initializing, wait a bit and check again
         if (isInitializing) {
             await new Promise(resolve => setTimeout(resolve, 1000));
-            return isConnected && address && provider;
+            return Boolean(isConnected && address && provider);
         }
         
         // If not connected, don't auto-connect, just return false
