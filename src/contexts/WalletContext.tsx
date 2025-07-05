@@ -38,6 +38,7 @@ type GlobalWalletState = {
     address: string | null;
     chainId: number | null;
     lastConnectedAt: number;
+    connectionEstablished?: boolean; // New flag to track if connection was ever established
 };
 
 // Persist wallet state for the current browser session so it survives page refreshes.
@@ -46,7 +47,7 @@ const WALLET_STATE_STORAGE_KEY = 'walletState';
 const loadStoredState = (): GlobalWalletState => {
     if (typeof window !== 'undefined') {
         try {
-            const raw = window.sessionStorage.getItem(WALLET_STATE_STORAGE_KEY);
+            const raw = window.localStorage.getItem(WALLET_STATE_STORAGE_KEY);
             if (raw) {
                 return JSON.parse(raw) as GlobalWalletState;
             }
@@ -65,7 +66,7 @@ const loadStoredState = (): GlobalWalletState => {
 const saveWalletState = (state: GlobalWalletState) => {
     if (typeof window !== 'undefined') {
         try {
-            window.sessionStorage.setItem(WALLET_STATE_STORAGE_KEY, JSON.stringify(state));
+            window.localStorage.setItem(WALLET_STATE_STORAGE_KEY, JSON.stringify(state));
         } catch (err) {
             console.warn('[WalletContext] Failed to save wallet state', err);
         }
@@ -259,6 +260,32 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                 
                 if (provider) {
                     console.log('[WalletContext] Provider successfully initialized');
+                    // Immediately verify if we're actually connected
+                    if (globalWalletState.isConnected && globalWalletState.address) {
+                        try {
+                            const accounts = await provider.request({ method: 'eth_accounts' });
+                            if (!accounts || accounts.length === 0) {
+                                console.log('[WalletContext] Wallet claims to be connected but no accounts found - resetting state');
+                                globalWalletState = {
+                                    isConnected: false,
+                                    address: null,
+                                    chainId: null,
+                                    lastConnectedAt: 0
+                                };
+                                saveWalletState(globalWalletState);
+                            } else if (accounts[0].toLowerCase() !== globalWalletState.address?.toLowerCase()) {
+                                console.log('[WalletContext] Account changed since last connection - updating global state');
+                                globalWalletState = {
+                                    ...globalWalletState,
+                                    address: accounts[0]
+                                };
+                                saveWalletState(globalWalletState);
+                            }
+                        } catch (err) {
+                            console.warn('[WalletContext] Error verifying wallet connection on init', err);
+                        }
+                    }
+                    
                     setProviderReady(true);
                     providerReadyRef.current = true;
                 } else {
@@ -356,7 +383,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                             isConnected: true,
                             address: accounts[0],
                             chainId: network.chainId,
-                            lastConnectedAt: Date.now()
+                            lastConnectedAt: Date.now(),
+                            connectionEstablished: true
                         };
                         saveWalletState(globalWalletState);
 
@@ -396,6 +424,12 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
             }
             setProviderReady(true);
             providerReadyRef.current = true;
+        }
+        
+        // If we're already successfully connected, don't try to connect again
+        if (isConnected && address && provider && signer) {
+            console.log('[WalletContext] Wallet already connected - skipping connect attempt');
+            return;
         }
         
         connectInProgressRef.current = true;
@@ -450,7 +484,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                 isConnected: true,
                 address: accounts[0],
                 chainId: network.chainId,
-                lastConnectedAt: Date.now()
+                lastConnectedAt: Date.now(),
+                connectionEstablished: true
             };
             saveWalletState(globalWalletState);
 
