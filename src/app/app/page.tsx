@@ -101,21 +101,9 @@ export default function AppPage() {
         }
         
         try {
-            // Add a small delay to ensure provider is fully initialized
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Log provider state to help debug
+            console.log('[AppPage] Starting data fetch...');
             console.log('[AppPage] Provider ready:', !!provider);
-            console.log('[AppPage] Signer ready:', !!signer);
             console.log('[AppPage] Address:', address);
-            
-            // Make sure we have a valid provider before proceeding
-            if (!provider._isProvider) {
-                console.error('[AppPage] Provider is not valid');
-                setIsLoading(false);
-                setDataFetchInProgress(false);
-                return;
-            }
             
             const data = await getUserData(provider, address);
             setUserData(data);
@@ -131,6 +119,8 @@ export default function AppPage() {
                 return { ...token, supplied, borrowed };
             });
             setMarketData(updatedMarketData);
+            
+            console.log('[AppPage] Data fetch completed successfully');
         } catch (error) {
             console.error("[AppPage] Error fetching user data:", error);
             // Only show toast if we're not in the initial loading state
@@ -157,19 +147,24 @@ export default function AppPage() {
             return;
         }
 
-        // Fetch data when wallet is ready
-        if (isConnected && provider && address && !dataFetchInProgress) {
-            fetchData();
-            
-            // Set up interval to refresh data every 60 seconds
-            const intervalId = setInterval(() => {
-                if (isConnected && !dataFetchInProgress) {
-                    fetchData();
-                }
-            }, 60000);
-            
-            return () => clearInterval(intervalId);
-        }
+        // Debounce data fetching to prevent excessive calls
+        const fetchTimeout = setTimeout(() => {
+            if (isConnected && provider && address && !dataFetchInProgress) {
+                fetchData();
+            }
+        }, 1000); // 1 second debounce
+
+        // Set up interval to refresh data every 60 seconds
+        const intervalId = setInterval(() => {
+            if (isConnected && provider && address && !dataFetchInProgress) {
+                fetchData();
+            }
+        }, 60000);
+        
+        return () => {
+            clearTimeout(fetchTimeout);
+            clearInterval(intervalId);
+        };
     }, [isConnected, provider, address, isInitializing]); // Simplified dependencies
 
     // Handlers to open different types of modals

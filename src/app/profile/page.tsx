@@ -76,24 +76,14 @@ export default function ProfilePage() {
         }
         
         try {
-            // Add a small delay to ensure provider is fully initialized
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Log provider state to help debug
+            console.log('[ProfilePage] Starting data fetch...');
             console.log('[ProfilePage] Provider ready:', !!provider);
-            console.log('[ProfilePage] Provider type:', provider ? provider.constructor.name : 'null');
             console.log('[ProfilePage] Address:', address);
-            
-            // Make sure we have a valid provider before proceeding
-            if (!provider._isProvider) {
-                console.error('[ProfilePage] Provider is not valid');
-                setIsLoading(false);
-                setDataFetchInProgress(false);
-                return;
-            }
             
             const data = await getUserData(provider, address);
             setUserData(data);
+            
+            console.log('[ProfilePage] Data fetch completed successfully');
         } catch (error) {
             console.error("[ProfilePage] Error fetching user data:", error);
             toast.error("Could not fetch your data from the network.");
@@ -116,19 +106,24 @@ export default function ProfilePage() {
             return;
         }
 
-        // Fetch data when wallet is ready
-        if (isConnected && provider && address && !dataFetchInProgress) {
-            fetchData();
-            
-            // Set up interval to refresh data every 60 seconds
-            const intervalId = setInterval(() => {
-                if (isConnected && !dataFetchInProgress) {
-                    fetchData();
-                }
-            }, 60000);
-            
-            return () => clearInterval(intervalId);
-        }
+        // Debounce data fetching to prevent excessive calls
+        const fetchTimeout = setTimeout(() => {
+            if (isConnected && provider && address && !dataFetchInProgress) {
+                fetchData();
+            }
+        }, 1000); // 1 second debounce
+
+        // Set up interval to refresh data every 60 seconds
+        const intervalId = setInterval(() => {
+            if (isConnected && provider && address && !dataFetchInProgress) {
+                fetchData();
+            }
+        }, 60000);
+        
+        return () => {
+            clearTimeout(fetchTimeout);
+            clearInterval(intervalId);
+        };
     }, [isConnected, provider, address, isInitializing]); // Simplified dependencies
 
     // If wallet is initializing, show a loading state

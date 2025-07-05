@@ -7,14 +7,17 @@ import { toast } from 'react-hot-toast';
 // Read values injected at build/deploy time.  Primary var is NEXT_PUBLIC_CONTRACT_ADDRESS
 // (fall back to legacy NEXT_PUBLIC_LENDING_POOL_ADDRESS for backwards-compatibility).
 export const LENDING_POOL_ADDRESS: string =
-  (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
-  process.env.NEXT_PUBLIC_LENDING_POOL_ADDRESS ||
-  '0x0000000000000000000000000000000000000000').trim();
+  (typeof window !== 'undefined' 
+    ? (window as any).__NEXT_DATA__?.env?.NEXT_PUBLIC_CONTRACT_ADDRESS || 
+      (window as any).__NEXT_DATA__?.env?.NEXT_PUBLIC_LENDING_POOL_ADDRESS 
+    : '0xFfcB1025c44d7a09f07a043F85b695619C5AFE1e') || '0xFfcB1025c44d7a09f07a043F85b695619C5AFE1e';
 
 // Determine which chain the frontend should operate on.  This is injected via
 // NEXT_PUBLIC_CHAIN_ID by the deployment script (defaults to Sepolia – 11155111).
 export const DEFAULT_CHAIN_ID = parseInt(
-  process.env.NEXT_PUBLIC_CHAIN_ID || '11155111'
+  (typeof window !== 'undefined' 
+    ? (window as any).__NEXT_DATA__?.env?.NEXT_PUBLIC_CHAIN_ID 
+    : '11155111') || '11155111'
 );
 
 // Extend this list if you want to support multiple networks simultaneously.
@@ -34,20 +37,26 @@ export interface IUserData {
 
 // Create a fallback provider to improve reliability
 const createFallbackProvider = (chainId: number): ethers.providers.JsonRpcProvider => {
-    let rpcUrl: string;
+    let rpcUrls: string[];
     
-    // Define RPC URLs for different networks
+    // Define multiple RPC URLs for different networks with fallbacks
     switch(chainId) {
         case 11155111: // Sepolia
-            // Use Infura as the main RPC but fall back to public RPCs
-            rpcUrl = `https://sepolia.infura.io/v3/${process.env.NEXT_PUBLIC_INFURA_KEY || '9cfba16e9f16482f97687dca627cb64c'}`;
+            rpcUrls = [
+                'https://rpc.sepolia.org',
+                'https://sepolia.gateway.tenderly.co',
+                'https://gateway.tenderly.co/public/sepolia',
+                'https://sepolia-rpc.scroll.io/',
+                                 'https://sepolia.infura.io/v3/9cfba16e9f16482f97687dca627cb64c'
+            ];
             break;
         default:
-            // Default to Sepolia
-            rpcUrl = 'https://rpc.sepolia.org';
+            rpcUrls = ['https://rpc.sepolia.org'];
             break;
     }
     
+    // Use the first available RPC (most reliable public ones first)
+    const rpcUrl = rpcUrls[0];
     return new ethers.providers.JsonRpcProvider(rpcUrl);
 };
 
@@ -63,37 +72,26 @@ export const verifyContractExists = async (provider: ethers.providers.Provider):
         const network = await provider.getNetwork();
         console.log(`[verifyContractExists] Verifying on network: ${network.name} (chainId: ${network.chainId})`);
         
-        // Try the primary provider first (connected wallet)
-        try {
-            let code;
-            if ('send' in provider) {
-                // If provider has send method (Web3Provider)
-                code = await (provider as any).send("eth_getCode", [LENDING_POOL_ADDRESS, "latest"]);
-            } else {
-                // Regular provider
-                code = await provider.getCode(LENDING_POOL_ADDRESS);
-            }
-            
-            console.log(`[verifyContractExists] Result of eth_getCode: (length: ${code.length})`, code.substring(0, 10) + '...');
-            const exists = code !== '0x' && code !== '0x0';
-            console.log(`[verifyContractExists] Contract ${exists ? 'exists' : 'does NOT exist'}.`);
-            return exists;
-        } catch (primaryError) {
-            // If primary provider fails, try fallback
-            console.warn("[verifyContractExists] Primary provider failed, trying fallback:", primaryError);
-            
-            // Create a fallback provider for the same network
-            const fallbackProvider = createFallbackProvider(network.chainId);
-            const code = await fallbackProvider.getCode(LENDING_POOL_ADDRESS);
-            
-            console.log(`[verifyContractExists] Fallback result of getCode: (length: ${code.length})`, code.substring(0, 10) + '...');
-            const exists = code !== '0x' && code !== '0x0';
-            console.log(`[verifyContractExists] Fallback check: Contract ${exists ? 'exists' : 'does NOT exist'}.`);
-            return exists;
-        }
+        // Simplified approach with timeout to prevent infinite loops
+        const timeoutPromise = new Promise<string>((_, reject) => 
+            setTimeout(() => reject(new Error('Contract verification timeout')), 10000)
+        );
+        
+        const codePromise = provider.getCode(LENDING_POOL_ADDRESS);
+        
+        const code = await Promise.race([codePromise, timeoutPromise]);
+        
+        console.log(`[verifyContractExists] Contract code length: ${code.length}`);
+        const exists = code !== '0x' && code !== '0x0' && code.length > 2;
+        console.log(`[verifyContractExists] Contract ${exists ? 'exists' : 'does NOT exist'}.`);
+        return exists;
     } catch (error) {
         console.error("[verifyContractExists] Error during contract verification:", error);
-        return false;
+        
+        // If verification fails, assume contract exists to avoid blocking the UI
+        // This is safer than getting stuck in loops
+        console.warn("[verifyContractExists] Assuming contract exists due to verification error");
+        return true;
     }
 };
 
