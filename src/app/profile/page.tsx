@@ -76,10 +76,26 @@ export default function ProfilePage() {
         }
         
         try {
+            // Add a small delay to ensure provider is fully initialized
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Log provider state to help debug
+            console.log('[ProfilePage] Provider ready:', !!provider);
+            console.log('[ProfilePage] Provider type:', provider ? provider.constructor.name : 'null');
+            console.log('[ProfilePage] Address:', address);
+            
+            // Make sure we have a valid provider before proceeding
+            if (!provider._isProvider) {
+                console.error('[ProfilePage] Provider is not valid');
+                setIsLoading(false);
+                setDataFetchInProgress(false);
+                return;
+            }
+            
             const data = await getUserData(provider, address);
             setUserData(data);
         } catch (error) {
-            console.error("Error fetching user data:", error);
+            console.error("[ProfilePage] Error fetching user data:", error);
             toast.error("Could not fetch your data from the network.");
         } finally {
             setIsLoading(false);

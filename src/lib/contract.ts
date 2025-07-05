@@ -114,6 +114,23 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
         throw new Error('Lending pool address not set');
     }
 
+    // Validate provider
+    if (!provider) {
+        console.error('[getUserData] Provider is null or undefined');
+        throw new Error('Provider is not available');
+    }
+
+    // Check if provider is valid
+    try {
+        if (!provider._isProvider) {
+            console.error('[getUserData] Provider is not a valid ethers provider');
+            throw new Error('Invalid provider');
+        }
+    } catch (err) {
+        console.error('[getUserData] Error checking provider:', err);
+        throw new Error('Provider validation failed');
+    }
+
     // First verify the contract exists
     const contractExists = await verifyContractExists(provider);
     if (!contractExists) {
@@ -122,7 +139,15 @@ export const getUserData = async (provider: ethers.providers.Provider, userAddre
     }
 
     // Check if we're on the right network
-    const network = await provider.getNetwork();
+    let network;
+    try {
+        network = await provider.getNetwork();
+        console.log(`[getUserData] Connected to network: ${network.name} (chainId: ${network.chainId})`);
+    } catch (err) {
+        console.error('[getUserData] Failed to get network:', err);
+        throw new Error('Failed to get network information');
+    }
+    
     if (!SUPPORTED_CHAIN_IDS.includes(network.chainId)) {
         toast.error("Please connect to the correct network");
         throw new Error("Wrong network. Please switch your wallet to the expected network.");
