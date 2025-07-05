@@ -163,10 +163,9 @@ contract LendingPoolTest is Ownable, ReentrancyGuard {
     }
 
     function getTokenPrice(address token) public view returns (uint256) {
-        // On BSC testnet (chainId 97) we don't have real PancakeSwap pairs. Use 1:1 USD stub prices to keep the contract functional.
-        if (block.chainid == 97) {
-            // USDT & USDC are already $1. For other tokens just return $1 as placeholder.
-            return PRECISION;
+        if (block.chainid == 97 || block.chainid == 11155111) {
+            // On BSC Testnet or Sepolia, return a fixed price for any token to avoid dependency on mainnet pairs
+            return 1e18; // 1 USD
         }
         _ensureTokenSupported(token);
 

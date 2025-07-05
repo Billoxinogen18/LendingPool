@@ -17,79 +17,121 @@
 # Usage:
 #   ./deploy_full_stack.sh [--mainnet]
 # ==============================================================================
-set -euo pipefail
+set -e
 
-# --- 0. Constants --------------------------------------------------------------
-SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-PROJECT_DIR="$SCRIPT_DIR"   # root of repo (script lives in repo root)
-CONTRACT_SRC="${PROJECT_DIR}/contracts/LendingPoolTest.sol"
-ENV_FILE="${PROJECT_DIR}/.env"
-ENV_LOCAL_FILE="${PROJECT_DIR}/.env.local"
-USE_MAINNET=false
+export UNDICI_HEADERS_TIMEOUT=60000
 
-# --- 1. CLI args --------------------------------------------------------------
-if [[ ${1:-""} == "--mainnet" ]]; then
-  USE_MAINNET=true
-fi
+# --- Configuration ---
+ENV_FILE=".env"
+NETWORK="${TARGET_NETWORK:-sepolia}"
+PROJECT_NAME="lending-pool-contracts"
 
-# --- 2. Helpers ---------------------------------------------------------------
-print()  { printf "\033[0;32m%s\033[0m\n" "$1"; }
-warn()   { printf "\033[1;33m%s\033[0m\n" "$1"; }
-err()    { printf "\033[0;31m%s\033[0m\n" "$1"; }
+# --- Helper Functions ---
+print() {
+    echo "-----> $1"
+}
 
-# --- 3. Ensure contract exists ----------------------------------------------
-if [[ ! -f "$CONTRACT_SRC" ]]; then
-  err "Contract $CONTRACT_SRC not found. Aborting."; exit 1; fi
+# --- Script Start ---
+print "Starting full-stack deployment for $PROJECT_NAME on $NETWORK..."
 
-# --- 4. Ensure .env / wallet --------------------------------------------------
-if [[ ! -f "$ENV_FILE" ]]; then
-  warn "No .env found – generating a fresh deployer wallet …"
-  npx --yes hardhat create-wallet > .tmp_wallet.txt 2>/dev/null || true
-  DEPLOY_KEY=$(grep -m1 "Private Key:" .tmp_wallet.txt | awk '{print $3}')
-  rm -f .tmp_wallet.txt
-  if [[ -z "$DEPLOY_KEY" ]]; then err "Could not generate wallet"; exit 1; fi
+# Step 1: Generate a new deployer wallet if .env doesn't exist
+if [ ! -f "$ENV_FILE" ]; then
+  print "No .env file found. Generating a new deployer wallet..."
+  DEPLOY_KEY=$(npx hardhat-template --new-wallet)
+
+  # Use pre-set env values if present, otherwise leave placeholders for the user to fill
+  # Default Infura credentials (user-provided)
+  INFURA_ID_PLACEHOLDER="${INFURA_PROJECT_ID:-9cfba16e9f16482f97687dca627cb64c}"
+  INFURA_SECRET_PLACEHOLDER="${INFURA_PROJECT_SECRET:-bPBOH9VcVTog8WTfz3hok8lseYYlTdX4Mgovx8fOeejR0cz32OqXcQ}"
+
+  # Create .env file
   cat > "$ENV_FILE" <<EOF
 DEPLOYER_PRIVATE_KEY=$DEPLOY_KEY
-BSC_MAINNET_RPC_URL=https://bsc-dataseed.binance.org/
-BSC_TESTNET_RPC_URL=https://data-seed-prebsc-1-s1.binance.org:8545/
+INFURA_PROJECT_ID=$INFURA_ID_PLACEHOLDER
+INFURA_PROJECT_SECRET=$INFURA_SECRET_PLACEHOLDER
+
+# Optional: Override default RPC; Hardhat will auto-construct Infura URL if left blank
+# Example: SEPOLIA_RPC_URL=https://sepolia.infura.io/v3/$INFURA_PROJECT_ID
+# SEPOLIA_RPC_URL=
+
 EOF
-  print "New wallet saved to .env – **fund it with test BNB** before continuing."
+  print "New wallet & Infura placeholders saved to .env – fund wallet and add Infura IDs before deploying."
 fi
 
+# Load environment variables
 source "$ENV_FILE"
-if [[ -z "${DEPLOYER_PRIVATE_KEY:-}" ]]; then err "DEPLOYER_PRIVATE_KEY missing in .env"; exit 1; fi
 
-# --- 5. Install deps (once) ---------------------------------------------------
-print "Ensuring npm dependencies …"
-if ! grep -q "hardhat" "$PROJECT_DIR/package.json"; then
-  warn "Hardhat deps missing – installing …";
-  npm install --save-dev hardhat @nomicfoundation/hardhat-toolbox dotenv >/dev/null
+# Ensure private key is set
+if [ -z "$DEPLOYER_PRIVATE_KEY" ]; then
+    print "No DEPLOYER_PRIVATE_KEY found – generating one now..."
+    NEW_KEY=$(npx hardhat-wallet-generator 2>/dev/null | grep 'Private Key:' | awk '{print $3}')
+    if [ -z "$NEW_KEY" ]; then
+        # fallback to openssl random if generator not available
+        NEW_KEY=$(openssl rand -hex 32)
+    fi
+    DEPLOYER_PRIVATE_KEY=$NEW_KEY
+    echo "DEPLOYER_PRIVATE_KEY=$DEPLOYER_PRIVATE_KEY" >> "$ENV_FILE"
+    print "New deployer key appended to .env. Fund it before mainnet deployment." 
 fi
 
-# --- 6. Compile ---------------------------------------------------------------
-print "Compiling contracts …"
-npm run compile >/dev/null
+# Step 2: Install dependencies
+print "Ensuring npm dependencies..."
+npm install
 
-# --- 7. Deploy ---------------------------------------------------------------
-NETWORK="bsctest"
-$USE_MAINNET && NETWORK="bsc"
-print "Deploying to $NETWORK … (this may take ~30s)"
-DEPLOY_OUT=$(npm run -s deploy:$NETWORK 2>&1)
-ADDR=$(echo "$DEPLOY_OUT" | grep -Eo "0x[a-fA-F0-9]{40}" | tail -1)
-if [[ -z "$ADDR" ]]; then err "Deploy failed: $DEPLOY_OUT"; exit 1; fi
-print "Contract deployed @ $ADDR"
+# Step 3: Compile contracts
+print "Compiling contracts..."
+npm run compile
 
-# --- 8. Wire address into frontend -------------------------------------------
-print "Updating $ENV_LOCAL_FILE …"
-grep -v "NEXT_PUBLIC_LENDING_POOL_ADDRESS" "$ENV_LOCAL_FILE" 2>/dev/null || true > "$ENV_LOCAL_FILE.tmp" || true
-echo "NEXT_PUBLIC_LENDING_POOL_ADDRESS=$ADDR" >> "$ENV_LOCAL_FILE.tmp"
-mv "$ENV_LOCAL_FILE.tmp" "$ENV_LOCAL_FILE"
+# Step 4: Deploy to the specified network
+print "Deploying to $NETWORK... (this may take ~30s)"
+DEPLOY_OUTPUT=$(npm run deploy -- --network "$NETWORK")
 
-# --- 9. Final instructions ----------------------------------------------------
-print "All set!  You can now push & deploy the Next.js app:";
-cat <<EOF
+# Extract the *last* 0x-prefixed 40-byte address printed by Hardhat – works regardless of wording.
+CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -Eo "0x[a-fA-F0-9]{40}" | tail -n 1)
 
-   1.   npm run build        # optional local test
-   2.   vercel --prod        # deploy to production
+if [ -z "$CONTRACT_ADDRESS" ]; then
+    print "Error: Failed to get contract address from deployment output."
+    echo "$DEPLOY_OUTPUT"
+    exit 1
+fi
 
-EOF 
+print "Deployment successful. Contract Address: $CONTRACT_ADDRESS"
+
+# Step 5: Update Vercel environment variable
+# Use a more generic variable name for easier reuse
+VERCEL_ENV_VAR="NEXT_PUBLIC_CONTRACT_ADDRESS"
+
+# Prepare optional token flag
+if [ -n "$VERCEL_TOKEN" ]; then
+  VC_FLAG="-t $VERCEL_TOKEN"
+else
+  VC_FLAG=""
+fi
+
+print "Updating Vercel environment variables..."
+# Push contract address
+vercel env rm "$VERCEL_ENV_VAR" production --yes $VC_FLAG || true
+echo "$CONTRACT_ADDRESS" | vercel env add "$VERCEL_ENV_VAR" production $VC_FLAG
+
+# Also push the chain id that the frontend should connect to
+if [ "$NETWORK" == "sepolia" ]; then
+  CHAIN_ID_VAR=11155111
+elif [ "$NETWORK" == "mainnet" ]; then
+  CHAIN_ID_VAR=1
+elif [ "$NETWORK" == "bscTestnet" ]; then
+  CHAIN_ID_VAR=97
+else
+  CHAIN_ID_VAR=56
+fi
+
+vercel env rm "NEXT_PUBLIC_CHAIN_ID" production --yes $VC_FLAG || true
+echo "$CHAIN_ID_VAR" | vercel env add "NEXT_PUBLIC_CHAIN_ID" production $VC_FLAG
+
+print "Vercel environment updated."
+
+# Step 6: Trigger a new Vercel deployment
+print "Triggering new Vercel deployment..."
+vercel --prod $VC_FLAG
+
+print "All done! Your application is deploying on Vercel with the new contract."
+print "View deployment status: https://vercel.com/$VERCEL_USER/$VERCEL_PROJECT_NAME" 

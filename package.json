@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "compile": "hardhat compile",
+    "deploy": "hardhat run scripts/deploy.js",
     "deploy:bsctest": "hardhat run scripts/deploy.js --network bscTestnet",
     "deploy:bsc": "hardhat run scripts/deploy.js --network bsc"
   },
@@ -18,7 +19,8 @@
     "next": "14.2.3",
     "react": "^18",
     "react-dom": "^18",
-    "react-hot-toast": "^2.4.1"
+    "react-hot-toast": "^2.4.1",
+    "@heroicons/react": "^2.1.3"
   },
   "devDependencies": {
     "@nomiclabs/hardhat-ethers": "^2.2.2",
