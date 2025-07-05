@@ -84,10 +84,26 @@ export default function ProfilePage() {
         }
         
         try {
+            // Add a small delay to ensure provider is fully initialized
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Log provider state to help debug
+            console.log('[ProfilePage] Provider ready:', !!provider);
+            console.log('[ProfilePage] Provider type:', provider ? provider.constructor.name : 'null');
+            console.log('[ProfilePage] Address:', address);
+            
+            // Make sure we have a valid provider before proceeding
+            if (!provider._isProvider) {
+                console.error('[ProfilePage] Provider is not valid');
+                setIsLoading(false);
+                setDataFetchInProgress(false);
+                return;
+            }
+            
             const data = await getUserData(provider, address);
             setUserData(data);
         } catch (error) {
-            console.error("Error fetching user data:", error);
+            console.error("[ProfilePage] Error fetching user data:", error);
             toast.error("Could not fetch your data from the network.");
         } finally {
             setIsLoading(false);
@@ -98,21 +114,29 @@ export default function ProfilePage() {
     useEffect(() => {
         // If wallet is connected or just initialized, fetch data
         if ((isConnected || !isInitializing) && !dataFetchInProgress) {
-            fetchData();
+            // Add a small delay to ensure provider is fully initialized after connection
+            const timeoutId = setTimeout(() => {
+                if (isConnected && provider && address) {
+                    fetchData();
+                }
+            }, 1000);
             
             // Set up interval to refresh data every 60 seconds
             const intervalId = setInterval(() => {
-                if (!dataFetchInProgress) {
+                if (!dataFetchInProgress && isConnected && provider && address) {
                     fetchData();
                 }
             }, 60000);
             
-            return () => clearInterval(intervalId);
+            return () => {
+                clearTimeout(timeoutId);
+                clearInterval(intervalId);
+            };
         } else if (!isConnected && !isInitializing) {
             setIsLoading(false);
             setUserData(null);
         }
-    }, [isConnected, fetchData, isInitializing, dataFetchInProgress]);
+    }, [isConnected, fetchData, isInitializing, dataFetchInProgress, provider, address]);
 
     // If wallet is initializing, show a loading state
     if (isInitializing) {

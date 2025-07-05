@@ -109,6 +109,22 @@ export default function AppPage() {
         }
         
         try {
+            // Add a small delay to ensure provider is fully initialized
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Log provider state to help debug
+            console.log('[AppPage] Provider ready:', !!provider);
+            console.log('[AppPage] Signer ready:', !!signer);
+            console.log('[AppPage] Address:', address);
+            
+            // Make sure we have a valid provider before proceeding
+            if (!provider._isProvider) {
+                console.error('[AppPage] Provider is not valid');
+                setIsLoading(false);
+                setDataFetchInProgress(false);
+                return;
+            }
+            
             const data = await getUserData(provider, address);
             setUserData(data);
 
@@ -125,7 +141,7 @@ export default function AppPage() {
             });
             setMarketData(updatedMarketData);
         } catch (error) {
-            console.error("Error fetching user data:", error);
+            console.error("[AppPage] Error fetching user data:", error);
             // Only show toast if we're not in the initial loading state
             if (!isLoading) {
                 toast.error("Could not fetch your data from the network.");
@@ -134,26 +150,34 @@ export default function AppPage() {
             setIsLoading(false);
             setDataFetchInProgress(false);
         }
-    }, [provider, address, isConnected, checkContractDeployment, chainId, ensureWalletConnected, dataFetchInProgress]);
+    }, [provider, address, isConnected, checkContractDeployment, chainId, ensureWalletConnected, dataFetchInProgress, signer]);
 
     useEffect(() => {
         // If wallet is connected or just initialized, fetch data
         if ((isConnected || !isInitializing) && !dataFetchInProgress) {
-            fetchData();
+            // Add a small delay to ensure provider is fully initialized after connection
+            const timeoutId = setTimeout(() => {
+                if (isConnected && provider && address) {
+                    fetchData();
+                }
+            }, 1000);
             
             // Set up interval to refresh data every 60 seconds
             const intervalId = setInterval(() => {
-                if (!dataFetchInProgress) {
+                if (!dataFetchInProgress && isConnected && provider && address) {
                     fetchData();
                 }
             }, 60000);
             
-            return () => clearInterval(intervalId);
+            return () => {
+                clearTimeout(timeoutId);
+                clearInterval(intervalId);
+            };
         } else if (!isConnected && !isInitializing) {
             setIsLoading(false);
             setUserData(null);
         }
-    }, [isConnected, fetchData, isInitializing, dataFetchInProgress]);
+    }, [isConnected, fetchData, isInitializing, dataFetchInProgress, provider, address]);
 
     // Handlers to open different types of modals
     const openModal = (token: Token, type: 'supply' | 'withdraw' | 'borrow' | 'repay') => {
