@@ -110,15 +110,31 @@ const getEthereumProvider = (): any | null => {
     const winAny = window as any;
     const { ethereum } = winAny;
     if (!ethereum) return null;
-    // If multiple providers injected, find MetaMask specifically.
     if (ethereum.isMetaMask) return ethereum;
     if (Array.isArray(ethereum.providers)) {
         const metamaskProvider = ethereum.providers.find((p: any) => p.isMetaMask);
-        if (metamaskProvider) return metamaskProvider;
-        // Fall back to first provider.
-        return ethereum.providers[0];
+        return metamaskProvider || ethereum.providers[0];
     }
     return ethereum;
+};
+
+// Wait for wallet extensions to finish injecting before proceeding.
+const waitForProvider = async (timeoutMs = 3000): Promise<any | null> => {
+    const existing = getEthereumProvider();
+    if (existing) return existing;
+
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            resolve(getEthereumProvider());
+        };
+
+        window.addEventListener('ethereum#initialized', finish, { once: true });
+        window.addEventListener('eip6963:announceProvider', finish, { once: true });
+        setTimeout(finish, timeoutMs);
+    });
 };
 
 // Create a provider component
@@ -393,7 +409,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                 setWalletStatus('connected');
                 
                 // Still need to set up provider and signer
-                const baseProviderConnect = getEthereumProvider();
+                const baseProviderConnect = await waitForProvider();
                 if (baseProviderConnect) {
                     try {
                         setIsInitializing(true);
@@ -416,7 +432,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         // If already connected (address present) ensure provider is ready
         if (isConnected && address) {
             if (!provider) {
-                const ethereum = getEthereumProvider();
+                const ethereum = await waitForProvider();
                 if (ethereum) {
                     const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
                     const web3Signer = web3Provider.getSigner();
@@ -466,7 +482,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                 setWalletStatus('connected');
                 
                 // Still need to set up provider and signer
-                const baseProviderConnect = getEthereumProvider();
+                const baseProviderConnect = await waitForProvider();
                 if (baseProviderConnect) {
                     try {
                         setIsInitializing(true);
@@ -487,7 +503,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
             }
             
             // Otherwise check localStorage and wallet
-            const ethereum = getEthereumProvider();
+            const ethereum = await waitForProvider();
             if (ethereum && localStorage.getItem('walletConnected') === 'true') {
                 try {
                     const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
@@ -544,7 +560,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         };
         
         let safeDisconnect: (() => Promise<void>) | undefined;
-        const ethProviderGlobal = getEthereumProvider();
+        const ethProviderGlobal = getEthereumProvider(); // can't await in outer scope; listeners will attach later
         if (ethProviderGlobal) {
             const ethProvider = ethProviderGlobal;
             ethProvider.on('accountsChanged', handleAccountsChanged);
