@@ -24,7 +24,7 @@ import UserDashboard from '@/components/UserDashboard';
 
 // Main application component for the Lending Pool
 export default function AppPage() {
-    const { isConnected, provider, address, signer, chainId, isInitializing, ensureWalletConnected } = useWalletContext();
+    const { isConnected, provider, address, signer, chainId, isInitializing, connectWallet } = useWalletContext();
     const [userData, setUserData] = useState<IUserData | null>(null);
     const [marketData, setMarketData] = useState<Token[]>(TOKENS);
     const [isLoading, setIsLoading] = useState(true);
@@ -70,22 +70,13 @@ export default function AppPage() {
         }
     }, [provider, chainId]);
 
-    // Function to fetch all required data from the blockchain
+    // Simplified function to fetch all required data from the blockchain
     const fetchData = useCallback(async () => {
         console.log('[AppPage] fetchData triggered.');
         
-        // First ensure wallet is connected
-        if (!isConnected) {
-            const connected = await ensureWalletConnected();
-            if (!connected) {
-                console.log('[AppPage] fetchData aborted: wallet connection failed.');
-                setIsLoading(false);
-                return;
-            }
-        }
-        
-        if (!provider || !address) {
-            console.log('[AppPage] fetchData aborted: provider or address missing.');
+        // Only fetch if we have required wallet state
+        if (!isConnected || !provider || !address) {
+            console.log('[AppPage] fetchData aborted: wallet not ready.');
             setIsLoading(false);
             return;
         }
@@ -99,6 +90,7 @@ export default function AppPage() {
         }
         
         setDataFetchInProgress(true);
+        setIsLoading(true);
         
         // Check if contract is deployed first
         const contractValid = await checkContractDeployment();
@@ -114,7 +106,6 @@ export default function AppPage() {
 
             // Update market data with user-specific balances
             const updatedMarketData = TOKENS.map(token => {
-                // Use previous data as fallback if available to prevent UI jumps
                 const supplied = data.collateral[token.address] 
                     ? ethers.utils.formatUnits(data.collateral[token.address], token.decimals) 
                     : '0';
@@ -134,26 +125,36 @@ export default function AppPage() {
             setIsLoading(false);
             setDataFetchInProgress(false);
         }
-    }, [provider, address, isConnected, checkContractDeployment, chainId, ensureWalletConnected, dataFetchInProgress]);
+    }, [provider, address, isConnected, chainId]); // Simplified dependencies
 
+    // Effect to handle data fetching when wallet state changes
     useEffect(() => {
-        // If wallet is connected or just initialized, fetch data
-        if ((isConnected || !isInitializing) && !dataFetchInProgress) {
+        // Clear data if wallet disconnected
+        if (!isConnected || !address) {
+            setUserData(null);
+            setIsLoading(false);
+            return;
+        }
+
+        // Skip if still initializing
+        if (isInitializing) {
+            return;
+        }
+
+        // Fetch data when wallet is ready
+        if (isConnected && provider && address && !dataFetchInProgress) {
             fetchData();
             
             // Set up interval to refresh data every 60 seconds
             const intervalId = setInterval(() => {
-                if (!dataFetchInProgress) {
+                if (isConnected && !dataFetchInProgress) {
                     fetchData();
                 }
             }, 60000);
             
             return () => clearInterval(intervalId);
-        } else if (!isConnected && !isInitializing) {
-            setIsLoading(false);
-            setUserData(null);
         }
-    }, [isConnected, fetchData, isInitializing, dataFetchInProgress]);
+    }, [isConnected, provider, address, isInitializing]); // Simplified dependencies
 
     // Handlers to open different types of modals
     const openModal = (token: Token, type: 'supply' | 'withdraw' | 'borrow' | 'repay') => {
@@ -170,17 +171,9 @@ export default function AppPage() {
 
     // Main transaction handler
     const handleTransaction = async (amount: string, token: Token, type: 'supply' | 'withdraw' | 'borrow' | 'repay') => {
-        // First ensure wallet is connected
-        if (!isConnected) {
-            const connected = await ensureWalletConnected();
-            if (!connected) {
-                toast.error("Please connect your wallet to proceed");
-                return;
-            }
-        }
-        
-        if (!signer || !address) {
-            toast.error("Wallet not connected");
+        // Check wallet connection first
+        if (!isConnected || !signer || !address) {
+            toast.error("Please connect your wallet to proceed");
             return;
         }
         
@@ -370,7 +363,7 @@ export default function AppPage() {
                 <h1 className="text-4xl font-bold text-white mb-4">Welcome to the Lending Pool</h1>
                 <p className="text-xl text-gray-400 mb-6">Please connect your wallet to manage your assets.</p>
                 <button 
-                    onClick={() => ensureWalletConnected()}
+                    onClick={connectWallet}
                     className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg text-lg font-medium transition-colors"
                 >
                     Connect Wallet

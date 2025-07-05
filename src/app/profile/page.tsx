@@ -10,7 +10,7 @@ import UserDashboard from '@/components/UserDashboard';
 
 // Profile page to display a detailed view of the user's assets
 export default function ProfilePage() {
-    const { isConnected, provider, address, chainId, isInitializing, ensureWalletConnected } = useWalletContext();
+    const { isConnected, provider, address, chainId, isInitializing, connectWallet } = useWalletContext();
     const [userData, setUserData] = useState<IUserData | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [contractError, setContractError] = useState<string | null>(null);
@@ -49,18 +49,9 @@ export default function ProfilePage() {
     const fetchData = useCallback(async () => {
         console.log('[ProfilePage] fetchData triggered.');
         
-        // First ensure wallet is connected
-        if (!isConnected) {
-            const connected = await ensureWalletConnected();
-            if (!connected) {
-                console.log('[ProfilePage] fetchData aborted: wallet connection failed.');
-                setIsLoading(false);
-                return;
-            }
-        }
-        
-        if (!provider || !address) {
-            console.log('[ProfilePage] fetchData aborted: provider or address missing.');
+        // Only fetch if we have required wallet state
+        if (!isConnected || !provider || !address) {
+            console.log('[ProfilePage] fetchData aborted: wallet not ready.');
             setIsLoading(false);
             return;
         }
@@ -74,6 +65,7 @@ export default function ProfilePage() {
         }
         
         setDataFetchInProgress(true);
+        setIsLoading(true);
         
         // Check if contract is deployed first
         const contractValid = await checkContractDeployment();
@@ -93,26 +85,35 @@ export default function ProfilePage() {
             setIsLoading(false);
             setDataFetchInProgress(false);
         }
-    }, [provider, address, checkContractDeployment, isConnected, chainId, ensureWalletConnected, dataFetchInProgress]);
+    }, [provider, address, isConnected, chainId]); // Simplified dependencies
 
     useEffect(() => {
-        // If wallet is connected or just initialized, fetch data
-        if ((isConnected || !isInitializing) && !dataFetchInProgress) {
+        // Clear data if wallet disconnected
+        if (!isConnected || !address) {
+            setUserData(null);
+            setIsLoading(false);
+            return;
+        }
+
+        // Skip if still initializing
+        if (isInitializing) {
+            return;
+        }
+
+        // Fetch data when wallet is ready
+        if (isConnected && provider && address && !dataFetchInProgress) {
             fetchData();
             
             // Set up interval to refresh data every 60 seconds
             const intervalId = setInterval(() => {
-                if (!dataFetchInProgress) {
+                if (isConnected && !dataFetchInProgress) {
                     fetchData();
                 }
             }, 60000);
             
             return () => clearInterval(intervalId);
-        } else if (!isConnected && !isInitializing) {
-            setIsLoading(false);
-            setUserData(null);
         }
-    }, [isConnected, fetchData, isInitializing, dataFetchInProgress]);
+    }, [isConnected, provider, address, isInitializing]); // Simplified dependencies
 
     // If wallet is initializing, show a loading state
     if (isInitializing) {
@@ -131,7 +132,7 @@ export default function ProfilePage() {
                 <h1 className="text-4xl font-bold text-white mb-4">My Profile</h1>
                 <p className="text-xl text-gray-400 mb-6">Connect your wallet to view your detailed positions.</p>
                 <button 
-                    onClick={() => ensureWalletConnected()}
+                    onClick={connectWallet}
                     className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg text-lg font-medium transition-colors"
                 >
                     Connect Wallet
