@@ -131,9 +131,58 @@ const waitForProvider = async (timeoutMs = 3000): Promise<any | null> => {
             resolve(getEthereumProvider());
         };
 
-        window.addEventListener('ethereum#initialized', finish, { once: true });
-        window.addEventListener('eip6963:announceProvider', finish, { once: true });
-        setTimeout(finish, timeoutMs);
+        // Check if provider already exists in window
+        if (typeof window !== 'undefined') {
+            // Track provider initialization with a broader approach
+            const checkForProvider = () => {
+                const provider = getEthereumProvider();
+                if (provider) {
+                    console.log('[WalletContext] Provider found during initialization check');
+                    finish();
+                    return true;
+                }
+                return false;
+            };
+
+            // Check immediately
+            if (checkForProvider()) return;
+
+            // Use MutationObserver to detect when ethereum object might be injected
+            const observer = new MutationObserver(() => {
+                if (checkForProvider()) {
+                    observer.disconnect();
+                }
+            });
+            
+            // Observe document for changes that might indicate wallet injection
+            observer.observe(document, { 
+                childList: true, 
+                subtree: true, 
+                attributes: true,
+                characterData: true 
+            });
+
+            // Listen for standard events
+            window.addEventListener('ethereum#initialized', finish, { once: true });
+            window.addEventListener('eip6963:announceProvider', finish, { once: true });
+            
+            // Also set up polling as fallback
+            const pollInterval = setInterval(() => {
+                if (checkForProvider()) {
+                    clearInterval(pollInterval);
+                }
+            }, 100);
+
+            // Clean up after timeout
+            setTimeout(() => {
+                observer.disconnect();
+                clearInterval(pollInterval);
+                finish();
+            }, timeoutMs);
+        } else {
+            // Server-side - resolve with null
+            finish();
+        }
     });
 };
 
@@ -154,19 +203,11 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     // Ref to prevent overlapping connect attempts
     const connectInProgressRef = useRef(false);
 
-    // Update global state whenever local state changes
-    useEffect(() => {
-        if (isConnected && address) {
-            globalWalletState = {
-                isConnected,
-                address,
-                chainId,
-                lastConnectedAt: Date.now()
-            };
-            saveWalletState(globalWalletState);
-        }
-    }, [isConnected, address, chainId]);
-
+    // Dedicated state for provider readiness to prevent race conditions
+    const [providerReady, setProviderReady] = useState(false);
+    const providerReadyRef = useRef(false);
+    const initialConnectionAttemptedRef = useRef(false);
+    
     const switchToCorrectNetwork = async () => {
         const ethProvider = getEthereumProvider();
         if (!ethProvider) return false;
@@ -194,14 +235,240 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                     });
                     return true;
                 } catch (addError) {
-                    console.error('Error adding network to wallet:', addError);
+                    console.error('[WalletContext] Error adding network to wallet:', addError);
                     toast.error(`Failed to add ${networkParams.chainName} to your wallet`);
                     return false;
                 }
             }
-            console.error('Error switching network:', switchError);
+            console.error('[WalletContext] Error switching network:', switchError);
             toast.error(`Failed to switch to ${networkParams.chainName}`);
             return false;
+        }
+    };
+    
+    // Initialize ethereum provider once on mount
+    useEffect(() => {
+        let mounted = true;
+        
+        const initializeProvider = async () => {
+            try {
+                console.log('[WalletContext] Initializing provider...');
+                const provider = await waitForProvider(5000);
+                
+                if (!mounted) return;
+                
+                if (provider) {
+                    console.log('[WalletContext] Provider successfully initialized');
+                    setProviderReady(true);
+                    providerReadyRef.current = true;
+                } else {
+                    console.warn('[WalletContext] No provider available after waiting');
+                }
+            } catch (err) {
+                console.error('[WalletContext] Error initializing provider:', err);
+            }
+        };
+        
+        initializeProvider();
+        
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
+    // Modified checkConnection to only run when provider is ready
+    useEffect(() => {
+        if (!providerReady || initialConnectionAttemptedRef.current) {
+            return; // Don't attempt connection until provider is ready
+        }
+        
+        initialConnectionAttemptedRef.current = true;
+        
+        const checkConnection = async () => {
+            console.log('[WalletContext] Checking wallet connection (provider is ready)...');
+            
+            // First check global state for recent connection
+            if (globalWalletState.isConnected && 
+                globalWalletState.address && 
+                Date.now() - globalWalletState.lastConnectedAt < 120000) { // Extend to 2 minutes
+                
+                console.log('[WalletContext] Using recent global connection state');
+                setIsConnected(true);
+                setAddress(globalWalletState.address);
+                setChainId(globalWalletState.chainId);
+                setWalletStatus('connected');
+                
+                // Still need to set up provider and signer
+                const baseProviderConnect = getEthereumProvider(); // Already waited for provider
+                if (baseProviderConnect) {
+                    try {
+                        setIsInitializing(true);
+                        setWalletStatus('connecting');
+                        const ethereum = baseProviderConnect;
+                        const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
+                        const web3Signer = web3Provider.getSigner();
+                        setProvider(web3Provider);
+                        setSigner(web3Signer);
+                        setIsInitializing(false);
+                        return;
+                    } catch (error) {
+                        console.error('[WalletContext] Error setting up provider for auto-connect:', error);
+                        setWalletStatus('error');
+                        return;
+                    }
+                }
+            }
+            
+            // Otherwise check localStorage and wallet
+            const ethereum = getEthereumProvider(); // Already waited for provider
+            if (ethereum && localStorage.getItem('walletConnected') === 'true') {
+                try {
+                    const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
+                    // Use eth_accounts which doesn't trigger a wallet popup
+                    const accounts: string[] = await ethereum.request({ method: 'eth_accounts' });
+
+                    if (accounts && accounts.length > 0) {
+                        console.log('[WalletContext] Account found:', accounts[0]);
+                        const network = await web3Provider.getNetwork();
+                        
+                        if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
+                            console.log(`[WalletContext] Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
+                            const switched = await switchToCorrectNetwork();
+                            if (!switched) {
+                                 setIsInitializing(false);
+                                 setWalletStatus('error');
+                                 return;
+                            }
+                        }
+
+                        console.log('[WalletContext] Correct network. Setting up provider for auto-reconnect...');
+                        const web3Signer = web3Provider.getSigner();
+                        setProvider(web3Provider);
+                        setSigner(web3Signer);
+                        setAddress(accounts[0]);
+                        setChainId(network.chainId);
+                        setIsConnected(true);
+                        setWalletStatus('connected');
+                        console.log('[WalletContext] Reconnected successfully to:', accounts[0]);
+                        
+                        // Update global state
+                        globalWalletState = {
+                            isConnected: true,
+                            address: accounts[0],
+                            chainId: network.chainId,
+                            lastConnectedAt: Date.now()
+                        };
+                        saveWalletState(globalWalletState);
+
+                    } else {
+                        console.log('[WalletContext] No accounts found authorized, clearing stored connection state.');
+                        localStorage.removeItem('walletConnected');
+                        setWalletStatus('disconnected');
+                    }
+                } catch (error) {
+                    console.error("[WalletContext] Failed to auto-reconnect wallet:", error);
+                    localStorage.removeItem('walletConnected');
+                    setWalletStatus('error');
+                }
+            } else {
+                console.log('[WalletContext] No ethereum provider or not previously connected.');
+                setWalletStatus('disconnected');
+            }
+            setIsInitializing(false);
+        };
+        
+        checkConnection();
+    }, [providerReady]);
+
+    // Modified connectWallet to use the known provider
+    const connectWallet = async () => {
+        if (connectInProgressRef.current) {
+            console.log('[WalletContext] connectWallet aborted: already in progress');
+            return;
+        }
+        
+        if (!providerReadyRef.current) {
+            console.log('[WalletContext] Waiting for provider to be ready before connecting...');
+            const provider = await waitForProvider(3000);
+            if (!provider) {
+                toast.error('No wallet provider detected. Please install MetaMask.');
+                return;
+            }
+            setProviderReady(true);
+            providerReadyRef.current = true;
+        }
+        
+        connectInProgressRef.current = true;
+
+        try {
+            const baseProvider = getEthereumProvider();
+            if (!baseProvider) {
+                toast.error('No Ethereum provider (MetaMask) detected.');
+                setWalletStatus('error');
+                return;
+            }
+
+            setIsInitializing(true);
+            setWalletStatus('connecting');
+            console.log('[WalletContext] Connecting wallet...');
+
+            const accounts: string[] = await baseProvider.request({ method: 'eth_requestAccounts' });
+            console.log('[WalletContext] eth_requestAccounts returned:', accounts);
+
+            if (!accounts || accounts.length === 0) {
+                toast.error('No accounts found. Please unlock your wallet.');
+                setWalletStatus('error');
+                return;
+            }
+
+            const web3Provider = new ethers.providers.Web3Provider(baseProvider, 'any');
+            const network = await web3Provider.getNetwork();
+
+            if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
+                console.log(`[WalletContext] Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
+                const switched = await switchToCorrectNetwork();
+                if (!switched) {
+                    toast.error(`Please switch to ${networkParams.chainName} to proceed.`);
+                    setWalletStatus('error');
+                    return;
+                }
+            }
+
+            console.log('[WalletContext] Correct network. Setting up provider...');
+            const web3Signer = web3Provider.getSigner();
+            setProvider(web3Provider);
+            setSigner(web3Signer);
+            setAddress(accounts[0]);
+            setChainId(network.chainId);
+            setIsConnected(true);
+            setWalletStatus('connected');
+            localStorage.setItem('walletConnected', 'true');
+            console.log('[WalletContext] Wallet connected successfully, saved to localStorage');
+
+            // Update global state
+            globalWalletState = {
+                isConnected: true,
+                address: accounts[0],
+                chainId: network.chainId,
+                lastConnectedAt: Date.now()
+            };
+            saveWalletState(globalWalletState);
+
+            if (isInitialized) {
+                toast.success('Wallet connected!');
+            }
+        } catch (error: any) {
+            if (error?.code === 4001) {
+                // User rejected request
+                toast.error('Connection request rejected.');
+            } else {
+                console.error('[WalletContext] Failed to connect wallet:', error);
+                toast.error('Failed to connect wallet. Please try again.');
+            }
+            setWalletStatus('error');
+        } finally {
+            setIsInitializing(false);
+            connectInProgressRef.current = false;
         }
     };
 
@@ -316,91 +583,12 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         }
     }, [isConnected, isInitialized]);
 
-    const connectWallet = async () => {
-        if (connectInProgressRef.current) {
-            console.log('[WalletContext] connectWallet aborted: already in progress');
-            return;
-        }
-        connectInProgressRef.current = true;
-
-        try {
-            const baseProvider = getEthereumProvider();
-            if (!baseProvider) {
-                toast.error('No Ethereum provider (MetaMask) detected.');
-                setWalletStatus('error');
-                return;
-            }
-
-            setIsInitializing(true);
-            setWalletStatus('connecting');
-            console.log('Connecting wallet...');
-
-            const accounts: string[] = await baseProvider.request({ method: 'eth_requestAccounts' });
-            console.log('eth_requestAccounts returned:', accounts);
-
-            if (!accounts || accounts.length === 0) {
-                toast.error('No accounts found. Please unlock your wallet.');
-                setWalletStatus('error');
-                return;
-            }
-
-            const web3Provider = new ethers.providers.Web3Provider(baseProvider, 'any');
-            const network = await web3Provider.getNetwork();
-
-            if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
-                console.log(`Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
-                const switched = await switchToCorrectNetwork();
-                if (!switched) {
-                    toast.error(`Please switch to ${networkParams.chainName} to proceed.`);
-                    setWalletStatus('error');
-                    return;
-                }
-            }
-
-            console.log('Correct network. Setting up provider...');
-            const web3Signer = web3Provider.getSigner();
-            setProvider(web3Provider);
-            setSigner(web3Signer);
-            setAddress(accounts[0]);
-            setChainId(network.chainId);
-            setIsConnected(true);
-            setWalletStatus('connected');
-            localStorage.setItem('walletConnected', 'true');
-            console.log('Wallet connected successfully, saved to localStorage');
-
-            // Update global state
-            globalWalletState = {
-                isConnected: true,
-                address: accounts[0],
-                chainId: network.chainId,
-                lastConnectedAt: Date.now()
-            };
-            saveWalletState(globalWalletState);
-
-            if (isInitialized) {
-                toast.success('Wallet connected!');
-            }
-        } catch (error: any) {
-            if (error?.code === 4001) {
-                // User rejected request
-                toast.error('Connection request rejected.');
-            } else {
-                console.error('Failed to connect wallet:', error);
-                toast.error('Failed to connect wallet. Please try again.');
-            }
-            setWalletStatus('error');
-        } finally {
-            setIsInitializing(false);
-            connectInProgressRef.current = false;
-        }
-    };
-
     // Helper function to ensure wallet is connected
     const ensureWalletConnected = async (): Promise<boolean> => {
         // If we have a recent connection in global state, use that first
         if (globalWalletState.isConnected && 
             globalWalletState.address && 
-            Date.now() - globalWalletState.lastConnectedAt < 60000) { // Within last minute
+            Date.now() - globalWalletState.lastConnectedAt < 120000) { // Within last 2 minutes
             
             if (!isConnected) {
                 setIsConnected(true);
@@ -409,7 +597,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                 setWalletStatus('connected');
                 
                 // Still need to set up provider and signer
-                const baseProviderConnect = await waitForProvider();
+                const baseProviderConnect = getEthereumProvider(); // Already waited for provider
                 if (baseProviderConnect) {
                     try {
                         setIsInitializing(true);
@@ -420,7 +608,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                         setProvider(web3Provider);
                         setSigner(web3Signer);
                     } catch (error) {
-                        console.error('Error setting up provider for auto-connect:', error);
+                        console.error('[WalletContext] Error setting up provider for auto-connect:', error);
                         setWalletStatus('error');
                         return false;
                     }
@@ -432,7 +620,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         // If already connected (address present) ensure provider is ready
         if (isConnected && address) {
             if (!provider) {
-                const ethereum = await waitForProvider();
+                const ethereum = getEthereumProvider();
                 if (ethereum) {
                     const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
                     const web3Signer = web3Provider.getSigner();
@@ -465,111 +653,37 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         return false;
     };
 
-    // Effect to check if wallet is already connected on page load
+    // Only set up wallet event listeners when provider is ready
     useEffect(() => {
-        const checkConnection = async () => {
-            console.log('Checking wallet connection...');
-            
-            // First check global state for recent connection
-            if (globalWalletState.isConnected && 
-                globalWalletState.address && 
-                Date.now() - globalWalletState.lastConnectedAt < 60000) { // Within last minute
-                
-                console.log('Using recent global connection state');
-                setIsConnected(true);
-                setAddress(globalWalletState.address);
-                setChainId(globalWalletState.chainId);
-                setWalletStatus('connected');
-                
-                // Still need to set up provider and signer
-                const baseProviderConnect = await waitForProvider();
-                if (baseProviderConnect) {
-                    try {
-                        setIsInitializing(true);
-                        setWalletStatus('connecting');
-                        const ethereum = baseProviderConnect;
-                        const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
-                        const web3Signer = web3Provider.getSigner();
-                        setProvider(web3Provider);
-                        setSigner(web3Signer);
-                        setIsInitializing(false);
-                        return;
-                    } catch (error) {
-                        console.error('Error setting up provider for auto-connect:', error);
-                        setWalletStatus('error');
-                        return;
-                    }
-                }
-            }
-            
-            // Otherwise check localStorage and wallet
-            const ethereum = await waitForProvider();
-            if (ethereum && localStorage.getItem('walletConnected') === 'true') {
-                try {
-                    const web3Provider = new ethers.providers.Web3Provider(ethereum, 'any');
-                    const accounts: string[] = await ethereum.request({ method: 'eth_accounts' });
-
-                    if (accounts && accounts.length > 0) {
-                        console.log('Account found:', accounts[0]);
-                        const network = await web3Provider.getNetwork();
-                        
-                        if (network.chainId !== BSC_TESTNET_CHAIN_ID) {
-                            console.log(`Wrong network detected: ${network.chainId}. Requesting switch to ${BSC_TESTNET_CHAIN_ID}`);
-                            const switched = await switchToCorrectNetwork();
-                            if (!switched) {
-                                 setIsInitializing(false);
-                                 setWalletStatus('error');
-                                 return;
-                            }
-                        }
-
-                        console.log('Correct network. Setting up provider for auto-reconnect...');
-                        const web3Signer = web3Provider.getSigner();
-                        setProvider(web3Provider);
-                        setSigner(web3Signer);
-                        setAddress(accounts[0]);
-                        setChainId(network.chainId);
-                        setIsConnected(true);
-                        setWalletStatus('connected');
-                        console.log('Reconnected successfully to:', accounts[0]);
-                        
-                        // Update global state
-                        globalWalletState = {
-                            isConnected: true,
-                            address: accounts[0],
-                            chainId: network.chainId,
-                            lastConnectedAt: Date.now()
-                        };
-                        saveWalletState(globalWalletState);
-
-                    } else {
-                        console.log('No accounts found authorized, clearing stored connection state.');
-                        localStorage.removeItem('walletConnected');
-                        setWalletStatus('disconnected');
-                    }
-                } catch (error) {
-                    console.error("Failed to auto-reconnect wallet:", error);
-                    localStorage.removeItem('walletConnected');
-                    setWalletStatus('error');
-                }
-            } else {
-                console.log('No ethereum provider or not previously connected.');
-                setWalletStatus('disconnected');
-            }
-            setIsInitializing(false);
-        };
+        if (!providerReady) return;
         
         let safeDisconnect: (() => Promise<void>) | undefined;
-        const ethProviderGlobal = getEthereumProvider(); // can't await in outer scope; listeners will attach later
+        const ethProviderGlobal = getEthereumProvider();
         if (ethProviderGlobal) {
+            console.log('[WalletContext] Setting up wallet event listeners');
             const ethProvider = ethProviderGlobal;
-            ethProvider.on('accountsChanged', handleAccountsChanged);
-            ethProvider.on('chainChanged', handleChainChanged);
+            
+            // Use safer event handling
+            const handleAccountsChangedSafely = (accounts: string[]) => {
+                console.log('[WalletContext] accountsChanged event received:', accounts);
+                handleAccountsChanged(accounts);
+            };
+            
+            const handleChainChangedSafely = (chainIdHex: string) => {
+                console.log('[WalletContext] chainChanged event received:', chainIdHex);
+                handleChainChanged(chainIdHex);
+            };
+            
+            ethProvider.on('accountsChanged', handleAccountsChangedSafely);
+            ethProvider.on('chainChanged', handleChainChangedSafely);
+            
             // Some providers (e.g., TronLink) emit spurious "disconnect" events. Verify truly disconnected.
             safeDisconnect = async () => {
+                console.log('[WalletContext] disconnect event received - verifying...');
                 try {
                     const accounts: string[] = await ethProvider.request({ method: 'eth_accounts' });
                     if (accounts.length === 0) {
+                        console.log('[WalletContext] Confirmed disconnection - accounts empty');
                         disconnectWallet();
                     } else {
                         console.debug('[WalletContext] Ignored spurious disconnect event – accounts still present');
@@ -581,11 +695,11 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
             ethProvider.on('disconnect', safeDisconnect);
         }
 
-        checkConnection();
         setIsInitialized(true);
 
         return () => {
             if (ethProviderGlobal) {
+                console.log('[WalletContext] Removing wallet event listeners');
                 const ethProviderCleanup = getEthereumProvider();
                 if (ethProviderCleanup) {
                     const ethProvider = ethProviderCleanup;
@@ -597,7 +711,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
                 }
             }
         };
-    }, [handleAccountsChanged, handleChainChanged, disconnectWallet]);
+    }, [providerReady, handleAccountsChanged, handleChainChanged, disconnectWallet]);
 
     return (
         <WalletContext.Provider value={{ 
